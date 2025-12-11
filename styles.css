@@ -411,6 +411,96 @@
 	font-size: 8px;
 }
 
+/* ==================== Action Buttons (Apply/Copy) ==================== */
+.gemini-chat-actions {
+	display: flex;
+	gap: 8px;
+	margin-top: 12px;
+	padding-top: 12px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.gemini-chat-action-btn {
+	padding: 6px 12px;
+	font-size: 12px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	color: var(--text-normal);
+	cursor: pointer;
+	transition: all 0.2s ease;
+}
+
+.gemini-chat-action-btn:hover {
+	background: var(--background-modifier-hover);
+	border-color: var(--interactive-accent);
+}
+
+.gemini-chat-apply-container {
+	position: relative;
+	display: flex;
+}
+
+.gemini-chat-apply-btn {
+	border-top-right-radius: 0;
+	border-bottom-right-radius: 0;
+	border-right: none;
+}
+
+.gemini-chat-dropdown-arrow {
+	padding: 6px 8px;
+	font-size: 10px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-left: none;
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+	border-top-right-radius: 6px;
+	border-bottom-right-radius: 6px;
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: all 0.2s ease;
+}
+
+.gemini-chat-dropdown-arrow:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.gemini-chat-dropdown-menu {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	margin-top: 4px;
+	min-width: 200px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+	z-index: 100;
+	overflow: hidden;
+}
+
+.gemini-chat-dropdown-item {
+	padding: 10px 14px;
+	font-size: 13px;
+	color: var(--text-normal);
+	cursor: pointer;
+	transition: background 0.15s ease;
+}
+
+.gemini-chat-dropdown-item:hover {
+	background: var(--background-modifier-hover);
+}
+
+.gemini-chat-dropdown-item:not(:last-child) {
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.gemini-chat-copy-btn {
+	margin-left: auto;
+}
+
 /* ==================== Responsive Adjustments ==================== */
 @media (max-width: 500px) {
 	.gemini-chat-message {
@@ -424,5 +514,13 @@
 
 	.sync-stats {
 		grid-template-columns: 1fr;
+	}
+
+	.gemini-chat-actions {
+		flex-wrap: wrap;
+	}
+
+	.gemini-chat-dropdown-menu {
+		min-width: 180px;
 	}
 }

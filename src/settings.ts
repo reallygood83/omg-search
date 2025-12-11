@@ -17,6 +17,8 @@ export interface GeminiSyncSettings {
 	autoSync: boolean;
 	syncDebounceMs: number;
 	files: Record<string, FileSyncData>;
+	// Apply to Note settings
+	includeMetadata: boolean;
 }
 
 export const DEFAULT_SETTINGS: GeminiSyncSettings = {
@@ -27,7 +29,9 @@ export const DEFAULT_SETTINGS: GeminiSyncSettings = {
 	corpusDisplayName: 'Obsidian Vault',
 	autoSync: true,
 	syncDebounceMs: 3000,
-	files: {}
+	files: {},
+	// Apply to Note settings
+	includeMetadata: true
 };
 
 export class GeminiSyncSettingTab extends PluginSettingTab {
@@ -216,6 +220,20 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 					new Notice('Sync data cleared');
 					this.display();
+				})
+			);
+
+		// Apply to Note Section
+		containerEl.createEl('h2', { text: 'Apply to Note' });
+
+		new Setting(containerEl)
+			.setName('Include Metadata')
+			.setDesc('Add date and source information when inserting AI responses into notes.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.includeMetadata)
+				.onChange(async (value) => {
+					this.plugin.settings.includeMetadata = value;
+					await this.plugin.saveSettings();
 				})
 			);
 

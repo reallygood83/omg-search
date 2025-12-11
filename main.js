@@ -39,7 +39,9 @@ var DEFAULT_SETTINGS = {
   corpusDisplayName: "Obsidian Vault",
   autoSync: true,
   syncDebounceMs: 3e3,
-  files: {}
+  files: {},
+  // Apply to Note settings
+  includeMetadata: true
 };
 var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
@@ -162,6 +164,13 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
         new import_obsidian.Notice("Sync data cleared");
         this.display();
+      })
+    );
+    containerEl.createEl("h2", { text: "Apply to Note" });
+    new import_obsidian.Setting(containerEl).setName("Include Metadata").setDesc("Add date and source information when inserting AI responses into notes.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.includeMetadata).onChange(async (value) => {
+        this.plugin.settings.includeMetadata = value;
+        await this.plugin.saveSettings();
       })
     );
     containerEl.createEl("h2", { text: "Help" });
@@ -1954,6 +1963,22 @@ var SyncEngine = class {
 
 // src/chat-view.ts
 var import_obsidian4 = require("obsidian");
+var NoteSelectorModal = class extends import_obsidian4.FuzzySuggestModal {
+  constructor(app, onSelect) {
+    super(app);
+    this.onSelect = onSelect;
+    this.setPlaceholder("Select a note to apply content...");
+  }
+  getItems() {
+    return this.app.vault.getMarkdownFiles();
+  }
+  getItemText(item) {
+    return item.path;
+  }
+  onChooseItem(item, evt) {
+    this.onSelect(item);
+  }
+};
 var CHAT_VIEW_TYPE = "gemini-chat-view";
 var ChatView = class extends import_obsidian4.ItemView {
   constructor(leaf, plugin) {
@@ -2148,6 +2173,9 @@ var ChatView = class extends import_obsidian4.ItemView {
         });
       }
     }
+    if (message.role === "model") {
+      this.renderActionButtons(msgEl, message);
+    }
     this.scrollToBottom();
   }
   processCitationLinks(container) {
@@ -2221,6 +2249,148 @@ var ChatView = class extends import_obsidian4.ItemView {
     this.messagesContainer.empty();
     this.plugin.geminiService.clearChatHistory();
     this.showWelcomeMessage();
+  }
+  // Render action buttons (Apply, Copy) for AI responses
+  renderActionButtons(msgEl, message) {
+    const actionsEl = msgEl.createDiv({ cls: "gemini-chat-actions" });
+    const applyContainer = actionsEl.createDiv({ cls: "gemini-chat-apply-container" });
+    const applyBtn = applyContainer.createEl("button", {
+      cls: "gemini-chat-action-btn gemini-chat-apply-btn",
+      text: "\u{1F4DD} Apply"
+    });
+    const dropdownArrow = applyContainer.createEl("button", {
+      cls: "gemini-chat-dropdown-arrow",
+      text: "\u25BC"
+    });
+    const dropdownMenu = applyContainer.createDiv({ cls: "gemini-chat-dropdown-menu" });
+    dropdownMenu.style.display = "none";
+    const menuItems = [
+      { text: "\u{1F4CD} Insert at Cursor", action: () => this.insertAtCursor(message.content, message.citations) },
+      { text: "\u{1F4CE} Append to Current Note", action: () => this.appendToCurrentNote(message.content, message.citations) },
+      { text: "\u{1F4C4} Create New Note", action: () => this.createNewNote(message.content, message.citations) },
+      { text: "\u{1F4C2} Select Note...", action: () => this.selectNoteToApply(message.content, message.citations) }
+    ];
+    for (const item of menuItems) {
+      const menuItem = dropdownMenu.createEl("div", {
+        cls: "gemini-chat-dropdown-item",
+        text: item.text
+      });
+      menuItem.addEventListener("click", (e) => {
+        e.stopPropagation();
+        dropdownMenu.style.display = "none";
+        item.action();
+      });
+    }
+    dropdownArrow.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const isVisible = dropdownMenu.style.display !== "none";
+      dropdownMenu.style.display = isVisible ? "none" : "block";
+    });
+    applyBtn.addEventListener("click", () => {
+      this.insertAtCursor(message.content, message.citations);
+    });
+    document.addEventListener("click", () => {
+      dropdownMenu.style.display = "none";
+    });
+    const copyBtn = actionsEl.createEl("button", {
+      cls: "gemini-chat-action-btn gemini-chat-copy-btn",
+      text: "\u{1F4CB} Copy"
+    });
+    copyBtn.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(message.content);
+      copyBtn.textContent = "\u2713 Copied!";
+      setTimeout(() => {
+        copyBtn.textContent = "\u{1F4CB} Copy";
+      }, 2e3);
+    });
+  }
+  // Format content with optional metadata
+  formatContentWithMetadata(content, citations) {
+    if (!this.plugin.settings.includeMetadata) {
+      return content;
+    }
+    const now = new Date();
+    const dateStr = now.toLocaleDateString("ko-KR", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+    let result = `
+
+---
+*\u{1F916} Gemini Response (${dateStr})*
+
+${content}`;
+    if (citations && citations.length > 0) {
+      result += "\n\n**Sources:**\n";
+      for (const citation of citations) {
+        result += `- [[${citation.sourcePath}]]
+`;
+      }
+    }
+    result += "\n---\n";
+    return result;
+  }
+  // Insert at cursor position in active editor
+  async insertAtCursor(content, citations) {
+    var _a;
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian4.ItemView);
+    const markdownView = this.app.workspace.getActiveFile();
+    if (!markdownView) {
+      new import_obsidian4.Notice("No active note. Please open a note first.");
+      return;
+    }
+    const leaf = this.app.workspace.getMostRecentLeaf();
+    if (!leaf) {
+      new import_obsidian4.Notice("No active editor found.");
+      return;
+    }
+    const editor = (_a = leaf.view) == null ? void 0 : _a.editor;
+    if (!editor) {
+      new import_obsidian4.Notice("No editor found. Please open a note in edit mode.");
+      return;
+    }
+    const formattedContent = this.formatContentWithMetadata(content, citations);
+    editor.replaceSelection(formattedContent);
+    new import_obsidian4.Notice("\u2705 Content inserted at cursor!");
+  }
+  // Append to current note
+  async appendToCurrentNote(content, citations) {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile) {
+      new import_obsidian4.Notice("No active note. Please open a note first.");
+      return;
+    }
+    const formattedContent = this.formatContentWithMetadata(content, citations);
+    await this.app.vault.append(activeFile, formattedContent);
+    new import_obsidian4.Notice(`\u2705 Content appended to ${activeFile.name}!`);
+  }
+  // Create new note with content
+  async createNewNote(content, citations) {
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const timeStr = now.toTimeString().slice(0, 5).replace(":", "-");
+    const fileName = `Gemini Response ${dateStr} ${timeStr}.md`;
+    const formattedContent = this.formatContentWithMetadata(content, citations);
+    try {
+      const newFile = await this.app.vault.create(fileName, formattedContent);
+      await this.app.workspace.openLinkText(newFile.path, "", true);
+      new import_obsidian4.Notice(`\u2705 Created new note: ${fileName}`);
+    } catch (error) {
+      new import_obsidian4.Notice("Failed to create note. Please try again.");
+      console.error("Create note error:", error);
+    }
+  }
+  // Open note selector modal
+  selectNoteToApply(content, citations) {
+    const modal = new NoteSelectorModal(this.app, async (file) => {
+      const formattedContent = this.formatContentWithMetadata(content, citations);
+      await this.app.vault.append(file, formattedContent);
+      new import_obsidian4.Notice(`\u2705 Content appended to ${file.name}!`);
+    });
+    modal.open();
   }
   scrollToBottom() {
     setTimeout(() => {
