@@ -452,21 +452,7 @@ export class ChatView extends ItemView {
 			});
 		}
 
-		// Toggle dropdown on arrow click
-		dropdownArrow.addEventListener('click', (e) => {
-			e.preventDefault();
-			e.stopPropagation();
-			const isVisible = dropdownMenu.style.display !== 'none';
-			dropdownMenu.style.display = isVisible ? 'none' : 'block';
-		});
-
-		// Default apply action (Insert at Cursor)
-		applyBtn.addEventListener('click', (e) => {
-			e.stopPropagation();
-			this.insertAtCursor(message.content, message.citations);
-		});
-
-		// Close dropdown when clicking outside (use once: true to avoid memory leaks)
+		// Close dropdown when clicking outside
 		const closeDropdown = (e: MouseEvent) => {
 			if (!applyContainer.contains(e.target as Node)) {
 				dropdownMenu.style.display = 'none';
@@ -474,13 +460,31 @@ export class ChatView extends ItemView {
 			}
 		};
 
-		// Only add listener when dropdown is opened
-		dropdownArrow.addEventListener('click', () => {
-			if (dropdownMenu.style.display !== 'none') {
+		// Toggle dropdown on arrow click (single unified handler)
+		dropdownArrow.addEventListener('click', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+
+			const isCurrentlyVisible = dropdownMenu.style.display === 'block';
+
+			if (isCurrentlyVisible) {
+				// Close dropdown
+				dropdownMenu.style.display = 'none';
+				document.removeEventListener('click', closeDropdown);
+			} else {
+				// Open dropdown
+				dropdownMenu.style.display = 'block';
+				// Add outside click listener after a small delay
 				setTimeout(() => {
 					document.addEventListener('click', closeDropdown);
-				}, 10);
+				}, 0);
 			}
+		});
+
+		// Default apply action (Insert at Cursor)
+		applyBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this.insertAtCursor(message.content, message.citations);
 		});
 
 		// Copy button

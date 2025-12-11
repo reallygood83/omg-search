@@ -2282,28 +2282,29 @@ var ChatView = class extends import_obsidian4.ItemView {
         item.action();
       });
     }
-    dropdownArrow.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const isVisible = dropdownMenu.style.display !== "none";
-      dropdownMenu.style.display = isVisible ? "none" : "block";
-    });
-    applyBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.insertAtCursor(message.content, message.citations);
-    });
     const closeDropdown = (e) => {
       if (!applyContainer.contains(e.target)) {
         dropdownMenu.style.display = "none";
         document.removeEventListener("click", closeDropdown);
       }
     };
-    dropdownArrow.addEventListener("click", () => {
-      if (dropdownMenu.style.display !== "none") {
+    dropdownArrow.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const isCurrentlyVisible = dropdownMenu.style.display === "block";
+      if (isCurrentlyVisible) {
+        dropdownMenu.style.display = "none";
+        document.removeEventListener("click", closeDropdown);
+      } else {
+        dropdownMenu.style.display = "block";
         setTimeout(() => {
           document.addEventListener("click", closeDropdown);
-        }, 10);
+        }, 0);
       }
+    });
+    applyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.insertAtCursor(message.content, message.citations);
     });
     const copyBtn = actionsEl.createEl("button", {
       cls: "gemini-chat-action-btn gemini-chat-copy-btn",
