@@ -1312,17 +1312,36 @@ var GeminiService = class {
       await this.plugin.saveSettings();
     }
     if (this.plugin.settings.corpusName) {
-      return this.plugin.settings.corpusName;
+      console.log(`Verifying corpus: ${this.plugin.settings.corpusName}`);
+      try {
+        const response = await this.apiRequest(
+          `${API_BASE_URL}/${this.plugin.settings.corpusName}?key=${this.plugin.settings.apiKey}`
+        );
+        if (response.ok) {
+          console.log("Corpus verified.");
+          return this.plugin.settings.corpusName;
+        } else if (response.status === 404) {
+          console.warn("Corpus not found (404), clearing setting to recreate.");
+          this.plugin.settings.corpusName = "";
+          await this.plugin.saveSettings();
+        } else {
+          console.error("Error verifying corpus:", response.data);
+        }
+      } catch (error) {
+        console.error("Error checking corpus existence:", error);
+      }
     }
     const corpora = await this.listCorpora();
     const existing = corpora.find(
       (c) => c.displayName === this.plugin.settings.corpusDisplayName
     );
     if (existing) {
+      console.log(`Found existing corpus: ${existing.name}`);
       this.plugin.settings.corpusName = existing.name;
       await this.plugin.saveSettings();
       return existing.name;
     }
+    console.log(`Creating new corpus: ${this.plugin.settings.corpusDisplayName}`);
     const newCorpus = await this.createCorpus(this.plugin.settings.corpusDisplayName);
     if (newCorpus) {
       this.plugin.settings.corpusName = newCorpus.name;

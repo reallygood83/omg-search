@@ -157,11 +157,33 @@ export class GeminiService {
 			await this.plugin.saveSettings();
 		}
 
-		// If we already have a corpus, return it
+		// If we already have a corpus, verify it exists
 		if (this.plugin.settings.corpusName) {
-			return this.plugin.settings.corpusName;
+			console.log(`Verifying corpus: ${this.plugin.settings.corpusName}`);
+			try {
+				const response = await this.apiRequest(
+					`${API_BASE_URL}/${this.plugin.settings.corpusName}?key=${this.plugin.settings.apiKey}`
+				);
+
+				if (response.ok) {
+					console.log('Corpus verified.');
+					return this.plugin.settings.corpusName;
+				} else if (response.status === 404) {
+					console.warn('Corpus not found (404), clearing setting to recreate.');
+					this.plugin.settings.corpusName = '';
+					await this.plugin.saveSettings();
+				} else {
+					console.error('Error verifying corpus:', response.data);
+					// If other error (e.g. 403), maybe return null or retry? 
+					// For now, let's assume if verification fails heavily, we might want to try recreating or fail.
+					// But safe to just fall through if 404.
+				}
+			} catch (error) {
+				console.error('Error checking corpus existence:', error);
+			}
 		}
 
+		// If cleared or empty, try to find existing or create new
 		// Try to find existing corpus with same display name
 		const corpora = await this.listCorpora();
 		const existing = corpora.find(
@@ -169,12 +191,14 @@ export class GeminiService {
 		);
 
 		if (existing) {
+			console.log(`Found existing corpus: ${existing.name}`);
 			this.plugin.settings.corpusName = existing.name;
 			await this.plugin.saveSettings();
 			return existing.name;
 		}
 
 		// Create new corpus
+		console.log(`Creating new corpus: ${this.plugin.settings.corpusDisplayName}`);
 		const newCorpus = await this.createCorpus(this.plugin.settings.corpusDisplayName);
 		if (newCorpus) {
 			this.plugin.settings.corpusName = newCorpus.name;
