@@ -1,0 +1,25 @@
+# Node modules
+node_modules/
+
+# Build output (keep main.js for releases)
+# main.js
+
+# Environment files
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# NPM debug logs
+npm-debug.log*
+
+# Optional npm cache directory
+.npm
+
+# Test coverage
+coverage/
