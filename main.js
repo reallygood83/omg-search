@@ -1225,11 +1225,44 @@ var GeminiService = class {
   refreshClient() {
     this.initializeClient();
   }
+  // Helper method to make API requests using Obsidian's requestUrl (bypasses CORS)
+  async apiRequest(url, method = "GET", body) {
+    try {
+      const params = {
+        url,
+        method,
+        headers: { "Content-Type": "application/json" }
+      };
+      if (body) {
+        params.body = JSON.stringify(body);
+      }
+      const response = await (0, import_obsidian2.requestUrl)(params);
+      return {
+        ok: response.status >= 200 && response.status < 300,
+        status: response.status,
+        data: response.json
+      };
+    } catch (error) {
+      console.error("API request error:", error);
+      if (error.response) {
+        return {
+          ok: false,
+          status: error.status || 500,
+          data: error.response
+        };
+      }
+      return {
+        ok: false,
+        status: 500,
+        data: { error: error.message }
+      };
+    }
+  }
   async verifyApiKey() {
     try {
       if (!this.plugin.settings.apiKey)
         return false;
-      const response = await fetch(
+      const response = await this.apiRequest(
         `${API_BASE_URL}/models?key=${this.plugin.settings.apiKey}`
       );
       return response.ok;
@@ -1241,22 +1274,16 @@ var GeminiService = class {
   // ==================== Corpus Management ====================
   async createCorpus(displayName) {
     try {
-      const response = await fetch(
+      const response = await this.apiRequest(
         `${API_BASE_URL}/corpora?key=${this.plugin.settings.apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            displayName
-          })
-        }
+        "POST",
+        { displayName }
       );
       if (!response.ok) {
-        const error = await response.json();
-        console.error("Failed to create corpus:", error);
+        console.error("Failed to create corpus:", response.data);
         return null;
       }
-      return await response.json();
+      return response.data;
     } catch (error) {
       console.error("Create corpus error:", error);
       return null;
@@ -1264,15 +1291,14 @@ var GeminiService = class {
   }
   async listCorpora() {
     try {
-      const response = await fetch(
+      const response = await this.apiRequest(
         `${API_BASE_URL}/corpora?key=${this.plugin.settings.apiKey}`
       );
       if (!response.ok) {
         console.error("Failed to list corpora");
         return [];
       }
-      const data = await response.json();
-      return data.corpora || [];
+      return response.data.corpora || [];
     } catch (error) {
       console.error("List corpora error:", error);
       return [];
@@ -1302,36 +1328,29 @@ var GeminiService = class {
   // ==================== Document Management ====================
   async uploadDocument(corpusName, filePath, content) {
     try {
-      const response = await fetch(
+      const response = await this.apiRequest(
         `${API_BASE_URL}/${corpusName}/documents?key=${this.plugin.settings.apiKey}`,
+        "POST",
         {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            displayName: filePath,
-            customMetadata: [
-              { key: "path", stringValue: filePath },
-              { key: "source", stringValue: "obsidian" }
-            ]
-          })
+          displayName: filePath,
+          customMetadata: [
+            { key: "path", stringValue: filePath },
+            { key: "source", stringValue: "obsidian" }
+          ]
         }
       );
       if (!response.ok) {
-        const error = await response.json();
-        console.error("Failed to create document:", error);
+        console.error("Failed to create document:", response.data);
         return null;
       }
-      const document2 = await response.json();
-      const chunkResponse = await fetch(
+      const document2 = response.data;
+      const chunkResponse = await this.apiRequest(
         `${API_BASE_URL}/${document2.name}/chunks?key=${this.plugin.settings.apiKey}`,
+        "POST",
         {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            data: {
-              stringValue: content
-            }
-          })
+          data: {
+            stringValue: content
+          }
         }
       );
       if (!chunkResponse.ok) {
@@ -1347,29 +1366,25 @@ var GeminiService = class {
   }
   async updateDocument(documentName, content) {
     try {
-      const listResponse = await fetch(
+      const listResponse = await this.apiRequest(
         `${API_BASE_URL}/${documentName}/chunks?key=${this.plugin.settings.apiKey}`
       );
       if (listResponse.ok) {
-        const data = await listResponse.json();
-        const chunks = data.chunks || [];
+        const chunks = listResponse.data.chunks || [];
         for (const chunk of chunks) {
-          await fetch(
+          await this.apiRequest(
             `${API_BASE_URL}/${chunk.name}?key=${this.plugin.settings.apiKey}`,
-            { method: "DELETE" }
+            "DELETE"
           );
         }
       }
-      const chunkResponse = await fetch(
+      const chunkResponse = await this.apiRequest(
         `${API_BASE_URL}/${documentName}/chunks?key=${this.plugin.settings.apiKey}`,
+        "POST",
         {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            data: {
-              stringValue: content
-            }
-          })
+          data: {
+            stringValue: content
+          }
         }
       );
       return chunkResponse.ok;
@@ -1380,9 +1395,9 @@ var GeminiService = class {
   }
   async deleteDocument(documentName) {
     try {
-      const response = await fetch(
+      const response = await this.apiRequest(
         `${API_BASE_URL}/${documentName}?key=${this.plugin.settings.apiKey}`,
-        { method: "DELETE" }
+        "DELETE"
       );
       return response.ok;
     } catch (error) {
@@ -1392,15 +1407,14 @@ var GeminiService = class {
   }
   async listDocuments(corpusName) {
     try {
-      const response = await fetch(
+      const response = await this.apiRequest(
         `${API_BASE_URL}/${corpusName}/documents?key=${this.plugin.settings.apiKey}`
       );
       if (!response.ok) {
         console.error("Failed to list documents");
         return [];
       }
-      const data = await response.json();
-      return data.documents || [];
+      return response.data.documents || [];
     } catch (error) {
       console.error("List documents error:", error);
       return [];
@@ -1519,22 +1533,19 @@ ${truncated}
       return { results: [] };
     }
     try {
-      const response = await fetch(
+      const response = await this.apiRequest(
         `${API_BASE_URL}/${this.plugin.settings.corpusName}:query?key=${this.plugin.settings.apiKey}`,
+        "POST",
         {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            query,
-            resultsCount: 5
-          })
+          query,
+          resultsCount: 5
         }
       );
       if (!response.ok) {
         console.error("Query corpus failed");
         return { results: [] };
       }
-      return await response.json();
+      return response.data;
     } catch (error) {
       console.error("Query corpus error:", error);
       return { results: [] };
