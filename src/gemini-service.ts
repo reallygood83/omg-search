@@ -58,6 +58,7 @@ export class GeminiService {
 		body?: object
 	): Promise<{ ok: boolean; status: number; data: any }> {
 		try {
+			console.log(`[Gemini API] Request: ${method} ${url}`);
 			const params: RequestUrlParam = {
 				url: url,
 				method: method,

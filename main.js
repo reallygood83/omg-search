@@ -1228,6 +1228,7 @@ var GeminiService = class {
   // Helper method to make API requests using Obsidian's requestUrl (bypasses CORS)
   async apiRequest(url, method = "GET", body) {
     try {
+      console.log(`[Gemini API] Request: ${method} ${url}`);
       const params = {
         url,
         method,
