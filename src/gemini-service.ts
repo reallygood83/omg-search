@@ -212,35 +212,47 @@ export class GeminiService {
 
 	// ==================== Document Management ====================
 
-	// Helper method for multipart upload to File Search Store
-	private async uploadToFileSearchStore(
-		fileSearchStoreName: string,
-		displayName: string,
-		content: string,
-		mimeType: string = 'text/markdown'
-	): Promise<{ ok: boolean; status: number; data: any }> {
+	/**
+	 * Upload document using media.uploadToFileSearchStore API
+	 * This method uploads data directly to a FileSearchStore using multipart/related format.
+	 * The API automatically preprocesses and chunks the data.
+	 */
+	async uploadDocument(
+		corpusName: string,
+		filePath: string,
+		content: string
+	): Promise<DocumentInfo | null> {
 		try {
-			const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
+			console.log(`[Gemini API] Uploading document: ${filePath} to ${corpusName}`);
 
-			// Create metadata JSON - only documented fields allowed
-			// Per API docs: displayName, mimeType, chunkingConfig (optional)
+			// Use media.uploadToFileSearchStore endpoint with multipart/related format
+			const boundary = '----GeminiSyncBoundary' + Math.random().toString(36).substring(2);
+
+			// Metadata part - only displayName (mimeType is optional and will be inferred)
 			const metadata = JSON.stringify({
-				displayName: displayName,
-				mimeType: mimeType
+				displayName: filePath
 			});
 
-			// Build multipart body per Google's multipart/related format
-			let body = '';
-			body += `--${boundary}\r\n`;
-			body += 'Content-Type: application/json; charset=UTF-8\r\n\r\n';
-			body += metadata + '\r\n';
-			body += `--${boundary}\r\n`;
-			body += `Content-Type: ${mimeType}\r\n\r\n`;
-			body += content + '\r\n';
-			body += `--${boundary}--`;
+			// Build multipart/related body according to RFC 2387
+			// Important: Use consistent line endings (\r\n) throughout
+			const bodyParts: string[] = [];
+			bodyParts.push(`--${boundary}`);
+			bodyParts.push('Content-Type: application/json; charset=UTF-8');
+			bodyParts.push('');
+			bodyParts.push(metadata);
+			bodyParts.push(`--${boundary}`);
+			bodyParts.push('Content-Type: text/markdown');
+			bodyParts.push('');
+			bodyParts.push(content);
+			bodyParts.push(`--${boundary}--`);
 
-			const url = `${UPLOAD_BASE_URL}/${fileSearchStoreName}:uploadToFileSearchStore?key=${this.plugin.settings.apiKey}`;
-			console.log(`[Gemini API] Upload to FileSearchStore: ${url}`);
+			const body = bodyParts.join('\r\n');
+
+			// Endpoint: POST /upload/v1beta/{fileSearchStoreName}:uploadToFileSearchStore
+			const url = `${UPLOAD_BASE_URL}/${corpusName}:uploadToFileSearchStore?key=${this.plugin.settings.apiKey}`;
+
+			console.log(`[Gemini API] Upload URL: ${url}`);
+			console.log(`[Gemini API] Content length: ${content.length} bytes`);
 
 			const response = await requestUrl({
 				url: url,
@@ -251,80 +263,93 @@ export class GeminiService {
 				body: body
 			});
 
-			return {
-				ok: response.status >= 200 && response.status < 300,
-				status: response.status,
-				data: response.json
-			};
-		} catch (error: any) {
-			console.error('Upload to FileSearchStore error:', error);
-			if (error.response) {
-				return {
-					ok: false,
-					status: error.status || 500,
-					data: error.response
-				};
-			}
-			return {
-				ok: false,
-				status: 500,
-				data: { error: error.message }
-			};
-		}
-	}
+			console.log(`[Gemini API] Upload response status: ${response.status}`);
 
-	async uploadDocument(
-		corpusName: string,
-		filePath: string,
-		content: string
-	): Promise<DocumentInfo | null> {
-		try {
-			console.log(`[Gemini API] Uploading document: ${filePath} to ${corpusName}`);
-
-			// Use the uploadToFileSearchStore action for File Search API
-			const response = await this.uploadToFileSearchStore(
-				corpusName,
-				filePath,
-				content,
-				'text/markdown'
-			);
-
-			if (!response.ok) {
-				console.error('Failed to upload document:', response.data);
+			if (response.status < 200 || response.status >= 300) {
+				console.error('Failed to upload document:', response.json);
 				return null;
 			}
 
-			// The response contains the operation or document info
-			const result = response.data;
+			// Response is a Long-Running Operation
+			const operation = response.json;
+			console.log(`[Gemini API] Operation: ${JSON.stringify(operation)}`);
 
-			// If it's a long-running operation, we might need to poll for completion
-			// For now, return the document info if available
-			if (result.name && result.name.includes('/documents/')) {
+			// If operation is already done, extract the document info
+			if (operation.done) {
+				if (operation.error) {
+					console.error('Upload operation failed:', operation.error);
+					return null;
+				}
+				// Extract document info from response
+				const docResponse = operation.response;
 				return {
-					name: result.name,
-					displayName: result.displayName || filePath,
-					createTime: result.createTime || new Date().toISOString(),
-					updateTime: result.updateTime || new Date().toISOString()
-				};
-			}
-
-			// If it's an operation, extract document info from metadata
-			if (result.metadata && result.metadata.document) {
-				return {
-					name: result.metadata.document,
+					name: docResponse?.name || operation.name,
 					displayName: filePath,
-					createTime: new Date().toISOString(),
-					updateTime: new Date().toISOString()
+					createTime: docResponse?.createTime || new Date().toISOString(),
+					updateTime: docResponse?.updateTime || new Date().toISOString()
 				};
 			}
 
-			// Return what we have
-			console.log('[Gemini API] Upload response:', result);
-			return result;
-		} catch (error) {
+			// If not done, we need to poll the operation
+			// Wait a bit and check the operation status
+			const documentInfo = await this.waitForOperation(operation.name);
+			return documentInfo;
+
+		} catch (error: any) {
 			console.error('Upload document error:', error);
+			if (error.response) {
+				console.error('Error response:', error.response);
+			}
 			return null;
 		}
+	}
+
+	/**
+	 * Wait for a long-running operation to complete
+	 */
+	private async waitForOperation(operationName: string, maxRetries: number = 10): Promise<DocumentInfo | null> {
+		console.log(`[Gemini API] Waiting for operation: ${operationName}`);
+
+		for (let i = 0; i < maxRetries; i++) {
+			// Wait before checking (exponential backoff)
+			const waitTime = Math.min(1000 * Math.pow(1.5, i), 10000);
+			await new Promise(resolve => setTimeout(resolve, waitTime));
+
+			try {
+				const response = await this.apiRequest(
+					`${API_BASE_URL}/${operationName}?key=${this.plugin.settings.apiKey}`
+				);
+
+				if (!response.ok) {
+					console.error('Failed to get operation status:', response.data);
+					continue;
+				}
+
+				const operation = response.data;
+				console.log(`[Gemini API] Operation status (attempt ${i + 1}):`, operation.done);
+
+				if (operation.done) {
+					if (operation.error) {
+						console.error('Operation failed:', operation.error);
+						return null;
+					}
+
+					// Extract document info from response
+					const docResponse = operation.response;
+					return {
+						name: docResponse?.name || operationName.replace('/operations/', '/documents/'),
+						displayName: docResponse?.displayName || '',
+						createTime: docResponse?.createTime || new Date().toISOString(),
+						updateTime: docResponse?.updateTime || new Date().toISOString()
+					};
+				}
+			} catch (error) {
+				console.error(`Error checking operation status (attempt ${i + 1}):`, error);
+			}
+		}
+
+		console.error('Operation timed out');
+		return null;
 	}
 
 	async updateDocument(
@@ -334,43 +359,32 @@ export class GeminiService {
 		try {
 			console.log(`[Gemini API] Updating document: ${documentName}`);
 
-			// For File Search API, update means delete and re-upload
-			// Extract the file search store name and display name from document name
-			// Format: fileSearchStores/{store_id}/documents/{doc_id}
+			// Validation
 			const parts = documentName.split('/');
 			if (parts.length < 4) {
 				console.error('Invalid document name format:', documentName);
 				return false;
 			}
 
-			const fileSearchStoreName = `${parts[0]}/${parts[1]}`;
+			const corpusName = `${parts[0]}/${parts[1]}`;
 
-			// Get the document to retrieve displayName
+			// Try to get existing doc info to preserve displayName
+			let displayName = 'updated_file.md';
 			const getResponse = await this.apiRequest(
 				`${API_BASE_URL}/${documentName}?key=${this.plugin.settings.apiKey}`
 			);
 
-			let displayName = 'unknown.md';
 			if (getResponse.ok && getResponse.data.displayName) {
 				displayName = getResponse.data.displayName;
 			}
 
 			// Delete the existing document
-			const deleteSuccess = await this.deleteDocument(documentName);
-			if (!deleteSuccess) {
-				console.error('Failed to delete old document for update');
-				return false;
-			}
+			await this.deleteDocument(documentName);
 
-			// Re-upload with new content
-			const uploadResponse = await this.uploadToFileSearchStore(
-				fileSearchStoreName,
-				displayName,
-				content,
-				'text/markdown'
-			);
+			// Re-create as new document with same display name
+			const newDoc = await this.uploadDocument(corpusName, displayName, content);
 
-			return uploadResponse.ok;
+			return !!newDoc;
 		} catch (error) {
 			console.error('Update document error:', error);
 			return false;
