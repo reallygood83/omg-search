@@ -213,9 +213,9 @@ export class GeminiService {
 	// ==================== Document Management ====================
 
 	/**
-	 * Upload document using media.uploadToFileSearchStore API
-	 * This method uploads data directly to a FileSearchStore using multipart/related format.
-	 * The API automatically preprocesses and chunks the data.
+	 * Upload document using two-step workflow:
+	 * 1. Upload to Files API with uploadType=multipart
+	 * 2. Import to FileSearchStore using importFile
 	 */
 	async uploadDocument(
 		corpusName: string,
@@ -225,74 +225,17 @@ export class GeminiService {
 		try {
 			console.log(`[Gemini API] Uploading document: ${filePath} to ${corpusName}`);
 
-			// Use media.uploadToFileSearchStore endpoint with multipart/related format
-			const boundary = '----GeminiSyncBoundary' + Math.random().toString(36).substring(2);
-
-			// Metadata part - only displayName (mimeType is optional and will be inferred)
-			const metadata = JSON.stringify({
-				displayName: filePath
-			});
-
-			// Build multipart/related body according to RFC 2387
-			// Important: Use consistent line endings (\r\n) throughout
-			const bodyParts: string[] = [];
-			bodyParts.push(`--${boundary}`);
-			bodyParts.push('Content-Type: application/json; charset=UTF-8');
-			bodyParts.push('');
-			bodyParts.push(metadata);
-			bodyParts.push(`--${boundary}`);
-			bodyParts.push('Content-Type: text/markdown');
-			bodyParts.push('');
-			bodyParts.push(content);
-			bodyParts.push(`--${boundary}--`);
-
-			const body = bodyParts.join('\r\n');
-
-			// Endpoint: POST /upload/v1beta/{fileSearchStoreName}:uploadToFileSearchStore
-			const url = `${UPLOAD_BASE_URL}/${corpusName}:uploadToFileSearchStore?key=${this.plugin.settings.apiKey}`;
-
-			console.log(`[Gemini API] Upload URL: ${url}`);
-			console.log(`[Gemini API] Content length: ${content.length} bytes`);
-
-			const response = await requestUrl({
-				url: url,
-				method: 'POST',
-				headers: {
-					'Content-Type': `multipart/related; boundary=${boundary}`
-				},
-				body: body
-			});
-
-			console.log(`[Gemini API] Upload response status: ${response.status}`);
-
-			if (response.status < 200 || response.status >= 300) {
-				console.error('Failed to upload document:', response.json);
+			// Step 1: Upload to Files API
+			const fileResult = await this.uploadToFilesApi(filePath, content);
+			if (!fileResult) {
+				console.error('[Gemini API] Failed to upload to Files API');
 				return null;
 			}
 
-			// Response is a Long-Running Operation
-			const operation = response.json;
-			console.log(`[Gemini API] Operation: ${JSON.stringify(operation)}`);
+			console.log(`[Gemini API] File uploaded: ${fileResult.name}`);
 
-			// If operation is already done, extract the document info
-			if (operation.done) {
-				if (operation.error) {
-					console.error('Upload operation failed:', operation.error);
-					return null;
-				}
-				// Extract document info from response
-				const docResponse = operation.response;
-				return {
-					name: docResponse?.name || operation.name,
-					displayName: filePath,
-					createTime: docResponse?.createTime || new Date().toISOString(),
-					updateTime: docResponse?.updateTime || new Date().toISOString()
-				};
-			}
-
-			// If not done, we need to poll the operation
-			// Wait a bit and check the operation status
-			const documentInfo = await this.waitForOperation(operation.name);
+			// Step 2: Import to FileSearchStore
+			const documentInfo = await this.importFileToStore(corpusName, fileResult.name, filePath);
 			return documentInfo;
 
 		} catch (error: any) {
@@ -300,6 +243,137 @@ export class GeminiService {
 			if (error.response) {
 				console.error('Error response:', error.response);
 			}
+			return null;
+		}
+	}
+
+	/**
+	 * Upload file to Google Files API using multipart/form-data format
+	 */
+	private async uploadToFilesApi(
+		displayName: string,
+		content: string
+	): Promise<{ name: string } | null> {
+		try {
+			console.log(`[Gemini API] Step 1: Uploading to Files API...`);
+
+			// Build multipart/form-data body manually for Obsidian's requestUrl
+			const boundary = '----GeminiSyncBoundary' + Math.random().toString(36).substring(2);
+
+			// Metadata JSON
+			const metadata = JSON.stringify({
+				file: {
+					displayName: displayName,
+					mimeType: 'text/markdown'
+				}
+			});
+
+			// Build multipart/form-data body
+			// Note: Use \r\n for all line breaks as per HTTP spec
+			let body = '';
+			body += `--${boundary}\r\n`;
+			body += `Content-Disposition: form-data; name="metadata"\r\n`;
+			body += `Content-Type: application/json\r\n\r\n`;
+			body += metadata + '\r\n';
+			body += `--${boundary}\r\n`;
+			body += `Content-Disposition: form-data; name="file"; filename="${displayName}"\r\n`;
+			body += `Content-Type: text/markdown\r\n\r\n`;
+			body += content + '\r\n';
+			body += `--${boundary}--`;
+
+			const url = `${UPLOAD_BASE_URL}/files?uploadType=multipart&key=${this.plugin.settings.apiKey}`;
+
+			console.log(`[Gemini API] Files API URL: ${url.replace(this.plugin.settings.apiKey, 'API_KEY')}`);
+			console.log(`[Gemini API] Content length: ${content.length} bytes`);
+
+			const response = await requestUrl({
+				url: url,
+				method: 'POST',
+				headers: {
+					'Content-Type': `multipart/form-data; boundary=${boundary}`
+				},
+				body: body
+			});
+
+			console.log(`[Gemini API] Files API response status: ${response.status}`);
+
+			if (response.status < 200 || response.status >= 300) {
+				console.error('[Gemini API] Files API error:', response.json || response.text);
+				return null;
+			}
+
+			const result = response.json;
+			console.log(`[Gemini API] Files API response:`, JSON.stringify(result));
+
+			if (result.file && result.file.name) {
+				return { name: result.file.name };
+			}
+
+			console.error('[Gemini API] Unexpected Files API response format');
+			return null;
+
+		} catch (error: any) {
+			console.error('[Gemini API] Files API upload error:', error);
+			return null;
+		}
+	}
+
+	/**
+	 * Import a file from Files API to FileSearchStore
+	 */
+	private async importFileToStore(
+		corpusName: string,
+		fileName: string,
+		displayName: string
+	): Promise<DocumentInfo | null> {
+		try {
+			console.log(`[Gemini API] Step 2: Importing ${fileName} to ${corpusName}...`);
+
+			const url = `${API_BASE_URL}/${corpusName}:importFile?key=${this.plugin.settings.apiKey}`;
+
+			const response = await requestUrl({
+				url: url,
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					fileName: fileName
+				})
+			});
+
+			console.log(`[Gemini API] Import response status: ${response.status}`);
+
+			if (response.status < 200 || response.status >= 300) {
+				console.error('[Gemini API] Import error:', response.json || response.text);
+				return null;
+			}
+
+			const operation = response.json;
+			console.log(`[Gemini API] Import operation:`, JSON.stringify(operation));
+
+			// Import returns an operation - wait for it if not done
+			if (operation.done === false && operation.name) {
+				const result = await this.waitForOperation(operation.name);
+				if (result) {
+					return {
+						...result,
+						displayName: displayName
+					};
+				}
+				return null;
+			}
+
+			// If already done or immediate response
+			return {
+				name: operation.name || fileName.replace('files/', `${corpusName}/documents/`),
+				displayName: displayName,
+				createTime: new Date().toISOString(),
+				updateTime: new Date().toISOString()
+			};
+
+		} catch (error: any) {
+			console.error('[Gemini API] Import file error:', error);
 			return null;
 		}
 	}
