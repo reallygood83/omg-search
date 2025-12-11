@@ -1358,10 +1358,7 @@ var GeminiService = class {
       const boundary = "----WebKitFormBoundary" + Math.random().toString(36).substring(2);
       const metadata = JSON.stringify({
         displayName,
-        customMetadata: [
-          { key: "path", stringValue: displayName },
-          { key: "source", stringValue: "obsidian" }
-        ]
+        mimeType
       });
       let body = "";
       body += `--${boundary}\r

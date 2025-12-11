@@ -222,16 +222,14 @@ export class GeminiService {
 		try {
 			const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
 
-			// Create multipart form data manually
+			// Create metadata JSON - only documented fields allowed
+			// Per API docs: displayName, mimeType, chunkingConfig (optional)
 			const metadata = JSON.stringify({
 				displayName: displayName,
-				customMetadata: [
-					{ key: 'path', stringValue: displayName },
-					{ key: 'source', stringValue: 'obsidian' }
-				]
+				mimeType: mimeType
 			});
 
-			// Build multipart body
+			// Build multipart body per Google's multipart/related format
 			let body = '';
 			body += `--${boundary}\r\n`;
 			body += 'Content-Type: application/json; charset=UTF-8\r\n\r\n';
