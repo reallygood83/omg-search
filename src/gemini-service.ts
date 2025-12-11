@@ -3,6 +3,7 @@ import { TFile, requestUrl, RequestUrlParam } from 'obsidian';
 import GeminiSyncPlugin from './main';
 
 const API_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+const UPLOAD_BASE_URL = 'https://generativelanguage.googleapis.com/upload/v1beta';
 
 export interface CorpusInfo {
 	name: string;
@@ -211,51 +212,117 @@ export class GeminiService {
 
 	// ==================== Document Management ====================
 
+	// Helper method for multipart upload to File Search Store
+	private async uploadToFileSearchStore(
+		fileSearchStoreName: string,
+		displayName: string,
+		content: string,
+		mimeType: string = 'text/markdown'
+	): Promise<{ ok: boolean; status: number; data: any }> {
+		try {
+			const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
+
+			// Create multipart form data manually
+			const metadata = JSON.stringify({
+				displayName: displayName,
+				customMetadata: [
+					{ key: 'path', stringValue: displayName },
+					{ key: 'source', stringValue: 'obsidian' }
+				]
+			});
+
+			// Build multipart body
+			let body = '';
+			body += `--${boundary}\r\n`;
+			body += 'Content-Type: application/json; charset=UTF-8\r\n\r\n';
+			body += metadata + '\r\n';
+			body += `--${boundary}\r\n`;
+			body += `Content-Type: ${mimeType}\r\n\r\n`;
+			body += content + '\r\n';
+			body += `--${boundary}--`;
+
+			const url = `${UPLOAD_BASE_URL}/${fileSearchStoreName}:uploadToFileSearchStore?key=${this.plugin.settings.apiKey}`;
+			console.log(`[Gemini API] Upload to FileSearchStore: ${url}`);
+
+			const response = await requestUrl({
+				url: url,
+				method: 'POST',
+				headers: {
+					'Content-Type': `multipart/related; boundary=${boundary}`
+				},
+				body: body
+			});
+
+			return {
+				ok: response.status >= 200 && response.status < 300,
+				status: response.status,
+				data: response.json
+			};
+		} catch (error: any) {
+			console.error('Upload to FileSearchStore error:', error);
+			if (error.response) {
+				return {
+					ok: false,
+					status: error.status || 500,
+					data: error.response
+				};
+			}
+			return {
+				ok: false,
+				status: 500,
+				data: { error: error.message }
+			};
+		}
+	}
+
 	async uploadDocument(
 		corpusName: string,
 		filePath: string,
 		content: string
 	): Promise<DocumentInfo | null> {
 		try {
-			// Create document with inline content
-			const response = await this.apiRequest(
-				`${API_BASE_URL}/${corpusName}/documents?key=${this.plugin.settings.apiKey}`,
-				'POST',
-				{
-					displayName: filePath,
-					customMetadata: [
-						{ key: 'path', stringValue: filePath },
-						{ key: 'source', stringValue: 'obsidian' }
-					]
-				}
+			console.log(`[Gemini API] Uploading document: ${filePath} to ${corpusName}`);
+
+			// Use the uploadToFileSearchStore action for File Search API
+			const response = await this.uploadToFileSearchStore(
+				corpusName,
+				filePath,
+				content,
+				'text/markdown'
 			);
 
 			if (!response.ok) {
-				console.error('Failed to create document:', response.data);
+				console.error('Failed to upload document:', response.data);
 				return null;
 			}
 
-			const document = response.data;
+			// The response contains the operation or document info
+			const result = response.data;
 
-			// Now add the content as a chunk
-			const chunkResponse = await this.apiRequest(
-				`${API_BASE_URL}/${document.name}/chunks?key=${this.plugin.settings.apiKey}`,
-				'POST',
-				{
-					data: {
-						stringValue: content
-					}
-				}
-			);
-
-			if (!chunkResponse.ok) {
-				console.error('Failed to add chunk to document');
-				// Try to delete the empty document
-				await this.deleteDocument(document.name);
-				return null;
+			// If it's a long-running operation, we might need to poll for completion
+			// For now, return the document info if available
+			if (result.name && result.name.includes('/documents/')) {
+				return {
+					name: result.name,
+					displayName: result.displayName || filePath,
+					createTime: result.createTime || new Date().toISOString(),
+					updateTime: result.updateTime || new Date().toISOString()
+				};
 			}
 
-			return document;
+			// If it's an operation, extract document info from metadata
+			if (result.metadata && result.metadata.document) {
+				return {
+					name: result.metadata.document,
+					displayName: filePath,
+					createTime: new Date().toISOString(),
+					updateTime: new Date().toISOString()
+				};
+			}
+
+			// Return what we have
+			console.log('[Gemini API] Upload response:', result);
+			return result;
 		} catch (error) {
 			console.error('Upload document error:', error);
 			return null;
@@ -267,36 +334,45 @@ export class GeminiService {
 		content: string
 	): Promise<boolean> {
 		try {
-			// Delete existing chunks and add new one
-			// First, list existing chunks
-			const listResponse = await this.apiRequest(
-				`${API_BASE_URL}/${documentName}/chunks?key=${this.plugin.settings.apiKey}`
-			);
+			console.log(`[Gemini API] Updating document: ${documentName}`);
 
-			if (listResponse.ok) {
-				const chunks = listResponse.data.chunks || [];
-
-				// Delete each chunk
-				for (const chunk of chunks) {
-					await this.apiRequest(
-						`${API_BASE_URL}/${chunk.name}?key=${this.plugin.settings.apiKey}`,
-						'DELETE'
-					);
-				}
+			// For File Search API, update means delete and re-upload
+			// Extract the file search store name and display name from document name
+			// Format: fileSearchStores/{store_id}/documents/{doc_id}
+			const parts = documentName.split('/');
+			if (parts.length < 4) {
+				console.error('Invalid document name format:', documentName);
+				return false;
 			}
 
-			// Add new chunk with updated content
-			const chunkResponse = await this.apiRequest(
-				`${API_BASE_URL}/${documentName}/chunks?key=${this.plugin.settings.apiKey}`,
-				'POST',
-				{
-					data: {
-						stringValue: content
-					}
-				}
+			const fileSearchStoreName = `${parts[0]}/${parts[1]}`;
+
+			// Get the document to retrieve displayName
+			const getResponse = await this.apiRequest(
+				`${API_BASE_URL}/${documentName}?key=${this.plugin.settings.apiKey}`
 			);
 
-			return chunkResponse.ok;
+			let displayName = 'unknown.md';
+			if (getResponse.ok && getResponse.data.displayName) {
+				displayName = getResponse.data.displayName;
+			}
+
+			// Delete the existing document
+			const deleteSuccess = await this.deleteDocument(documentName);
+			if (!deleteSuccess) {
+				console.error('Failed to delete old document for update');
+				return false;
+			}
+
+			// Re-upload with new content
+			const uploadResponse = await this.uploadToFileSearchStore(
+				fileSearchStoreName,
+				displayName,
+				content,
+				'text/markdown'
+			);
+
+			return uploadResponse.ok;
 		} catch (error) {
 			console.error('Update document error:', error);
 			return false;

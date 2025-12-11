@@ -1208,6 +1208,7 @@ var GoogleGenerativeAI = class {
 // src/gemini-service.ts
 var import_obsidian2 = require("obsidian");
 var API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
+var UPLOAD_BASE_URL = "https://generativelanguage.googleapis.com/upload/v1beta";
 var GeminiService = class {
   constructor(plugin) {
     this.genAI = null;
@@ -1351,39 +1352,92 @@ var GeminiService = class {
     return null;
   }
   // ==================== Document Management ====================
+  // Helper method for multipart upload to File Search Store
+  async uploadToFileSearchStore(fileSearchStoreName, displayName, content, mimeType = "text/markdown") {
+    try {
+      const boundary = "----WebKitFormBoundary" + Math.random().toString(36).substring(2);
+      const metadata = JSON.stringify({
+        displayName,
+        customMetadata: [
+          { key: "path", stringValue: displayName },
+          { key: "source", stringValue: "obsidian" }
+        ]
+      });
+      let body = "";
+      body += `--${boundary}\r
+`;
+      body += "Content-Type: application/json; charset=UTF-8\r\n\r\n";
+      body += metadata + "\r\n";
+      body += `--${boundary}\r
+`;
+      body += `Content-Type: ${mimeType}\r
+\r
+`;
+      body += content + "\r\n";
+      body += `--${boundary}--`;
+      const url = `${UPLOAD_BASE_URL}/${fileSearchStoreName}:uploadToFileSearchStore?key=${this.plugin.settings.apiKey}`;
+      console.log(`[Gemini API] Upload to FileSearchStore: ${url}`);
+      const response = await (0, import_obsidian2.requestUrl)({
+        url,
+        method: "POST",
+        headers: {
+          "Content-Type": `multipart/related; boundary=${boundary}`
+        },
+        body
+      });
+      return {
+        ok: response.status >= 200 && response.status < 300,
+        status: response.status,
+        data: response.json
+      };
+    } catch (error) {
+      console.error("Upload to FileSearchStore error:", error);
+      if (error.response) {
+        return {
+          ok: false,
+          status: error.status || 500,
+          data: error.response
+        };
+      }
+      return {
+        ok: false,
+        status: 500,
+        data: { error: error.message }
+      };
+    }
+  }
   async uploadDocument(corpusName, filePath, content) {
     try {
-      const response = await this.apiRequest(
-        `${API_BASE_URL}/${corpusName}/documents?key=${this.plugin.settings.apiKey}`,
-        "POST",
-        {
-          displayName: filePath,
-          customMetadata: [
-            { key: "path", stringValue: filePath },
-            { key: "source", stringValue: "obsidian" }
-          ]
-        }
+      console.log(`[Gemini API] Uploading document: ${filePath} to ${corpusName}`);
+      const response = await this.uploadToFileSearchStore(
+        corpusName,
+        filePath,
+        content,
+        "text/markdown"
       );
       if (!response.ok) {
-        console.error("Failed to create document:", response.data);
+        console.error("Failed to upload document:", response.data);
         return null;
       }
-      const document2 = response.data;
-      const chunkResponse = await this.apiRequest(
-        `${API_BASE_URL}/${document2.name}/chunks?key=${this.plugin.settings.apiKey}`,
-        "POST",
-        {
-          data: {
-            stringValue: content
-          }
-        }
-      );
-      if (!chunkResponse.ok) {
-        console.error("Failed to add chunk to document");
-        await this.deleteDocument(document2.name);
-        return null;
+      const result = response.data;
+      if (result.name && result.name.includes("/documents/")) {
+        return {
+          name: result.name,
+          displayName: result.displayName || filePath,
+          createTime: result.createTime || new Date().toISOString(),
+          updateTime: result.updateTime || new Date().toISOString()
+        };
       }
-      return document2;
+      if (result.metadata && result.metadata.document) {
+        return {
+          name: result.metadata.document,
+          displayName: filePath,
+          createTime: new Date().toISOString(),
+          updateTime: new Date().toISOString()
+        };
+      }
+      console.log("[Gemini API] Upload response:", result);
+      return result;
     } catch (error) {
       console.error("Upload document error:", error);
       return null;
@@ -1391,28 +1445,32 @@ var GeminiService = class {
   }
   async updateDocument(documentName, content) {
     try {
-      const listResponse = await this.apiRequest(
-        `${API_BASE_URL}/${documentName}/chunks?key=${this.plugin.settings.apiKey}`
-      );
-      if (listResponse.ok) {
-        const chunks = listResponse.data.chunks || [];
-        for (const chunk of chunks) {
-          await this.apiRequest(
-            `${API_BASE_URL}/${chunk.name}?key=${this.plugin.settings.apiKey}`,
-            "DELETE"
-          );
-        }
+      console.log(`[Gemini API] Updating document: ${documentName}`);
+      const parts = documentName.split("/");
+      if (parts.length < 4) {
+        console.error("Invalid document name format:", documentName);
+        return false;
       }
-      const chunkResponse = await this.apiRequest(
-        `${API_BASE_URL}/${documentName}/chunks?key=${this.plugin.settings.apiKey}`,
-        "POST",
-        {
-          data: {
-            stringValue: content
-          }
-        }
+      const fileSearchStoreName = `${parts[0]}/${parts[1]}`;
+      const getResponse = await this.apiRequest(
+        `${API_BASE_URL}/${documentName}?key=${this.plugin.settings.apiKey}`
       );
-      return chunkResponse.ok;
+      let displayName = "unknown.md";
+      if (getResponse.ok && getResponse.data.displayName) {
+        displayName = getResponse.data.displayName;
+      }
+      const deleteSuccess = await this.deleteDocument(documentName);
+      if (!deleteSuccess) {
+        console.error("Failed to delete old document for update");
+        return false;
+      }
+      const uploadResponse = await this.uploadToFileSearchStore(
+        fileSearchStoreName,
+        displayName,
+        content,
+        "text/markdown"
+      );
+      return uploadResponse.ok;
     } catch (error) {
       console.error("Update document error:", error);
       return false;
