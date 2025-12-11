@@ -2150,7 +2150,8 @@ var ChatView = class extends import_obsidian4.ItemView {
     });
     const avatarEl = msgEl.createDiv({ cls: "gemini-chat-avatar" });
     avatarEl.textContent = message.role === "user" ? "\u{1F464}" : "\u{1F916}";
-    const contentEl = msgEl.createDiv({ cls: "gemini-chat-content" });
+    const contentWrapper = msgEl.createDiv({ cls: "gemini-chat-content-wrapper" });
+    const contentEl = contentWrapper.createDiv({ cls: "gemini-chat-content" });
     import_obsidian4.MarkdownRenderer.renderMarkdown(
       message.content,
       contentEl,
@@ -2159,7 +2160,7 @@ var ChatView = class extends import_obsidian4.ItemView {
     );
     this.processCitationLinks(contentEl);
     if (message.citations && message.citations.length > 0) {
-      const citationsEl = msgEl.createDiv({ cls: "gemini-chat-citations" });
+      const citationsEl = contentWrapper.createDiv({ cls: "gemini-chat-citations" });
       citationsEl.createEl("div", { cls: "gemini-chat-citations-label", text: "\u{1F4CE} Sources:" });
       for (const citation of message.citations) {
         const citationCard = citationsEl.createDiv({ cls: "gemini-chat-citation-card" });
@@ -2174,7 +2175,7 @@ var ChatView = class extends import_obsidian4.ItemView {
       }
     }
     if (message.role === "model") {
-      this.renderActionButtons(msgEl, message);
+      this.renderActionButtons(contentWrapper, message);
     }
     this.scrollToBottom();
   }
@@ -2282,15 +2283,27 @@ var ChatView = class extends import_obsidian4.ItemView {
       });
     }
     dropdownArrow.addEventListener("click", (e) => {
+      e.preventDefault();
       e.stopPropagation();
       const isVisible = dropdownMenu.style.display !== "none";
       dropdownMenu.style.display = isVisible ? "none" : "block";
     });
-    applyBtn.addEventListener("click", () => {
+    applyBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
       this.insertAtCursor(message.content, message.citations);
     });
-    document.addEventListener("click", () => {
-      dropdownMenu.style.display = "none";
+    const closeDropdown = (e) => {
+      if (!applyContainer.contains(e.target)) {
+        dropdownMenu.style.display = "none";
+        document.removeEventListener("click", closeDropdown);
+      }
+    };
+    dropdownArrow.addEventListener("click", () => {
+      if (dropdownMenu.style.display !== "none") {
+        setTimeout(() => {
+          document.addEventListener("click", closeDropdown);
+        }, 10);
+      }
     });
     const copyBtn = actionsEl.createEl("button", {
       cls: "gemini-chat-action-btn gemini-chat-copy-btn",

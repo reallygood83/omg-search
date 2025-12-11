@@ -272,8 +272,11 @@ export class ChatView extends ItemView {
 		const avatarEl = msgEl.createDiv({ cls: 'gemini-chat-avatar' });
 		avatarEl.textContent = message.role === 'user' ? '👤' : '🤖';
 
+		// Content wrapper - contains content, citations, and actions vertically stacked
+		const contentWrapper = msgEl.createDiv({ cls: 'gemini-chat-content-wrapper' });
+
 		// Content
-		const contentEl = msgEl.createDiv({ cls: 'gemini-chat-content' });
+		const contentEl = contentWrapper.createDiv({ cls: 'gemini-chat-content' });
 
 		// Render markdown content
 		MarkdownRenderer.renderMarkdown(
@@ -288,7 +291,7 @@ export class ChatView extends ItemView {
 
 		// Render citations if present
 		if (message.citations && message.citations.length > 0) {
-			const citationsEl = msgEl.createDiv({ cls: 'gemini-chat-citations' });
+			const citationsEl = contentWrapper.createDiv({ cls: 'gemini-chat-citations' });
 			citationsEl.createEl('div', { cls: 'gemini-chat-citations-label', text: '📎 Sources:' });
 
 			for (const citation of message.citations) {
@@ -307,7 +310,7 @@ export class ChatView extends ItemView {
 
 		// Add Apply/Copy buttons for model responses
 		if (message.role === 'model') {
-			this.renderActionButtons(msgEl, message);
+			this.renderActionButtons(contentWrapper, message);
 		}
 
 		this.scrollToBottom();
@@ -451,19 +454,33 @@ export class ChatView extends ItemView {
 
 		// Toggle dropdown on arrow click
 		dropdownArrow.addEventListener('click', (e) => {
+			e.preventDefault();
 			e.stopPropagation();
 			const isVisible = dropdownMenu.style.display !== 'none';
 			dropdownMenu.style.display = isVisible ? 'none' : 'block';
 		});
 
 		// Default apply action (Insert at Cursor)
-		applyBtn.addEventListener('click', () => {
+		applyBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
 			this.insertAtCursor(message.content, message.citations);
 		});
 
-		// Close dropdown when clicking outside
-		document.addEventListener('click', () => {
-			dropdownMenu.style.display = 'none';
+		// Close dropdown when clicking outside (use once: true to avoid memory leaks)
+		const closeDropdown = (e: MouseEvent) => {
+			if (!applyContainer.contains(e.target as Node)) {
+				dropdownMenu.style.display = 'none';
+				document.removeEventListener('click', closeDropdown);
+			}
+		};
+
+		// Only add listener when dropdown is opened
+		dropdownArrow.addEventListener('click', () => {
+			if (dropdownMenu.style.display !== 'none') {
+				setTimeout(() => {
+					document.addEventListener('click', closeDropdown);
+				}, 10);
+			}
 		});
 
 		// Copy button
