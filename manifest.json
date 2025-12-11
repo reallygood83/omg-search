@@ -1,7 +1,7 @@
 {
 	"id": "obsidian-gemini-sync",
 	"name": "Gemini Sync",
-	"version": "1.2.2",
+	"version": "1.2.3",
 	"minAppVersion": "1.0.0",
 	"description": "Sync your Obsidian vault with Google Gemini's File Search API for a Private NotebookLM experience",
 	"author": "김문정",
