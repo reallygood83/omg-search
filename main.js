@@ -1271,40 +1271,45 @@ var GeminiService = class {
       return false;
     }
   }
-  // ==================== Corpus Management ====================
+  // ==================== Corpus Management (FileSearchStores) ====================
   async createCorpus(displayName) {
     try {
       const response = await this.apiRequest(
-        `${API_BASE_URL}/corpora?key=${this.plugin.settings.apiKey}`,
+        `${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`,
         "POST",
         { displayName }
       );
       if (!response.ok) {
-        console.error("Failed to create corpus:", response.data);
+        console.error("Failed to create fileSearchStore:", response.data);
         return null;
       }
       return response.data;
     } catch (error) {
-      console.error("Create corpus error:", error);
+      console.error("Create fileSearchStore error:", error);
       return null;
     }
   }
   async listCorpora() {
     try {
       const response = await this.apiRequest(
-        `${API_BASE_URL}/corpora?key=${this.plugin.settings.apiKey}`
+        `${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`
       );
       if (!response.ok) {
-        console.error("Failed to list corpora");
+        console.error("Failed to list fileSearchStores");
         return [];
       }
-      return response.data.corpora || [];
+      return response.data.fileSearchStores || [];
     } catch (error) {
-      console.error("List corpora error:", error);
+      console.error("List fileSearchStores error:", error);
       return [];
     }
   }
   async getOrCreateCorpus() {
+    if (this.plugin.settings.corpusName && this.plugin.settings.corpusName.startsWith("corpora/")) {
+      console.log("Migrating from legacy corpus to fileSearchStore...");
+      this.plugin.settings.corpusName = "";
+      await this.plugin.saveSettings();
+    }
     if (this.plugin.settings.corpusName) {
       return this.plugin.settings.corpusName;
     }
