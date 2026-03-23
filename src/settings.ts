@@ -88,13 +88,9 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 			.setName('Gemini Model')
 			.setDesc('Select the Gemini model to use for chat. Gemini 2.5 Flash is recommended for best performance.')
 			.addDropdown(dropdown => {
-				dropdown.addOption('gemini-2.5-flash', 'Gemini 2.5 Flash - Latest (Recommended)');
-				dropdown.addOption('gemini-2.0-flash-exp', 'Gemini 2.0 Flash (Experimental)');
-				dropdown.addOption('gemini-1.5-flash-latest', 'Gemini 1.5 Flash (Latest)');
-				dropdown.addOption('gemini-1.5-flash-8b', 'Gemini 1.5 Flash 8B');
-				dropdown.addOption('gemini-1.5-flash', 'Gemini 1.5 Flash');
-				dropdown.addOption('gemini-1.5-pro-latest', 'Gemini 1.5 Pro (Latest)');
-				dropdown.addOption('gemini-1.5-pro', 'Gemini 1.5 Pro');
+			dropdown.addOption('gemini-2.5-flash', 'Gemini 2.5 Flash (Recommended)');
+			dropdown.addOption('gemini-2.5-flash-lite', 'Gemini 2.5 Flash Lite');
+			dropdown.addOption('gemini-2.5-pro', 'Gemini 2.5 Pro');
 
 				dropdown.setValue(this.plugin.settings.model);
 				dropdown.onChange(async (value) => {

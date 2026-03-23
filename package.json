@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-gemini-sync",
-	"version": "1.2.3",
+	"version": "1.2.4",
 	"description": "Sync Obsidian vault with Google Gemini File Search API",
 	"main": "main.js",
 	"scripts": {
