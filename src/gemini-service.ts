@@ -35,6 +35,7 @@ export class GeminiService {
 	private plugin: GeminiSyncPlugin;
 	private genAI: GoogleGenerativeAI | null = null;
 	private model: GenerativeModel | null = null;
+	private modelName: string | null = null;
 	private chatHistory: Content[] = [];
 
 	constructor(plugin: GeminiSyncPlugin) {
@@ -46,11 +47,29 @@ export class GeminiService {
 		if (this.plugin.settings.apiKey) {
 			this.genAI = new GoogleGenerativeAI(this.plugin.settings.apiKey);
 			this.model = this.genAI.getGenerativeModel({ model: this.plugin.settings.model });
+			this.modelName = this.plugin.settings.model;
+		} else {
+			this.genAI = null;
+			this.model = null;
+			this.modelName = null;
 		}
 	}
 
 	refreshClient() {
 		this.initializeClient();
+	}
+
+	private ensureCurrentModel() {
+		if (!this.plugin.settings.apiKey) {
+			this.genAI = null;
+			this.model = null;
+			this.modelName = null;
+			return;
+		}
+
+		if (!this.genAI || !this.model || this.modelName !== this.plugin.settings.model) {
+			this.initializeClient();
+		}
 	}
 
 	// Helper method to make API requests using Obsidian's requestUrl (bypasses CORS)
@@ -501,14 +520,12 @@ export class GeminiService {
 	// ==================== Chat / RAG ====================
 
 	async chat(userMessage: string): Promise<ChatMessage> {
-		if (!this.model) {
-			this.initializeClient();
-		}
+		this.ensureCurrentModel();
 
 		if (!this.model) {
 			return {
 				role: 'model',
-				content: 'Error: Gemini API not configured. Please set your API key in settings.'
+				content: 'Gemini API 키가 설정되어 있지 않습니다. 설정에서 API 키를 입력해 주세요.'
 			};
 		}
 
@@ -553,7 +570,7 @@ Instructions:
 				]
 			});
 
-			const result = await chat.sendMessage(userMessage);
+			const result = await this.sendMessageWithRetry(chat, userMessage);
 			const response = await result.response;
 			const text = response.text();
 			const usage = (response as any).usageMetadata || {};
@@ -589,9 +606,43 @@ Instructions:
 			console.error('Chat error:', error);
 			return {
 				role: 'model',
-				content: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`
+				content: this.formatChatError(error)
 			};
 		}
+	}
+
+	private async sendMessageWithRetry(chat: any, userMessage: string) {
+		let lastError: unknown;
+		for (let attempt = 0; attempt < 3; attempt++) {
+			try {
+				return await chat.sendMessage(userMessage);
+			} catch (error) {
+				lastError = error;
+				if (!this.isRetryableGeminiError(error) || attempt === 2) break;
+				await new Promise(resolve => setTimeout(resolve, 600 * Math.pow(2, attempt)));
+			}
+		}
+		throw lastError;
+	}
+
+	private isRetryableGeminiError(error: unknown): boolean {
+		const message = error instanceof Error ? error.message : String(error);
+		return /\[(500|502|503|504)\]/.test(message) || /internal error|overloaded|unavailable/i.test(message);
+	}
+
+	private formatChatError(error: unknown): string {
+		const message = error instanceof Error ? error.message : String(error || 'Unknown error occurred');
+		const model = this.plugin.settings.model;
+		if (this.isRetryableGeminiError(error)) {
+			return [
+				`Gemini 모델 호출이 일시적으로 실패했습니다. 현재 모델: \`${model}\`.`,
+				'Google API에서 500/일시 장애 응답을 반환했습니다. 플러그인이 자동 재시도했지만 실패했습니다.',
+				'잠시 후 다시 시도하거나, 급하면 설정에서 다른 모델로 바꿔 주세요.',
+				'',
+				`원본 오류: ${message}`
+			].join('\n');
+		}
+		return `Gemini 요청 실패. 현재 모델: \`${model}\`.\n\n${message}`;
 	}
 
 	private async buildContext(): Promise<string> {

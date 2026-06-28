@@ -1329,6 +1329,7 @@ var GeminiService = class {
   constructor(plugin) {
     this.genAI = null;
     this.model = null;
+    this.modelName = null;
     this.chatHistory = [];
     this.plugin = plugin;
     this.initializeClient();
@@ -1337,10 +1338,26 @@ var GeminiService = class {
     if (this.plugin.settings.apiKey) {
       this.genAI = new GoogleGenerativeAI(this.plugin.settings.apiKey);
       this.model = this.genAI.getGenerativeModel({ model: this.plugin.settings.model });
+      this.modelName = this.plugin.settings.model;
+    } else {
+      this.genAI = null;
+      this.model = null;
+      this.modelName = null;
     }
   }
   refreshClient() {
     this.initializeClient();
+  }
+  ensureCurrentModel() {
+    if (!this.plugin.settings.apiKey) {
+      this.genAI = null;
+      this.model = null;
+      this.modelName = null;
+      return;
+    }
+    if (!this.genAI || !this.model || this.modelName !== this.plugin.settings.model) {
+      this.initializeClient();
+    }
   }
   // Helper method to make API requests using Obsidian's requestUrl (bypasses CORS)
   async apiRequest(url, method = "GET", body) {
@@ -1687,13 +1704,11 @@ var GeminiService = class {
   }
   // ==================== Chat / RAG ====================
   async chat(userMessage) {
-    if (!this.model) {
-      this.initializeClient();
-    }
+    this.ensureCurrentModel();
     if (!this.model) {
       return {
         role: "model",
-        content: "Error: Gemini API not configured. Please set your API key in settings."
+        content: "Gemini API \uD0A4\uAC00 \uC124\uC815\uB418\uC5B4 \uC788\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694."
       };
     }
     try {
@@ -1730,7 +1745,7 @@ Instructions:
           // Previous history without current message
         ]
       });
-      const result = await chat.sendMessage(userMessage);
+      const result = await this.sendMessageWithRetry(chat, userMessage);
       const response = await result.response;
       const text = response.text();
       const usage = response.usageMetadata || {};
@@ -1761,9 +1776,43 @@ ${userMessage}`))
       console.error("Chat error:", error);
       return {
         role: "model",
-        content: `Error: ${error instanceof Error ? error.message : "Unknown error occurred"}`
+        content: this.formatChatError(error)
       };
     }
+  }
+  async sendMessageWithRetry(chat, userMessage) {
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await chat.sendMessage(userMessage);
+      } catch (error) {
+        lastError = error;
+        if (!this.isRetryableGeminiError(error) || attempt === 2)
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 600 * Math.pow(2, attempt)));
+      }
+    }
+    throw lastError;
+  }
+  isRetryableGeminiError(error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return /\[(500|502|503|504)\]/.test(message) || /internal error|overloaded|unavailable/i.test(message);
+  }
+  formatChatError(error) {
+    const message = error instanceof Error ? error.message : String(error || "Unknown error occurred");
+    const model = this.plugin.settings.model;
+    if (this.isRetryableGeminiError(error)) {
+      return [
+        `Gemini \uBAA8\uB378 \uD638\uCD9C\uC774 \uC77C\uC2DC\uC801\uC73C\uB85C \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4. \uD604\uC7AC \uBAA8\uB378: \`${model}\`.`,
+        "Google API\uC5D0\uC11C 500/\uC77C\uC2DC \uC7A5\uC560 \uC751\uB2F5\uC744 \uBC18\uD658\uD588\uC2B5\uB2C8\uB2E4. \uD50C\uB7EC\uADF8\uC778\uC774 \uC790\uB3D9 \uC7AC\uC2DC\uB3C4\uD588\uC9C0\uB9CC \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",
+        "\uC7A0\uC2DC \uD6C4 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uAC70\uB098, \uAE09\uD558\uBA74 \uC124\uC815\uC5D0\uC11C \uB2E4\uB978 \uBAA8\uB378\uB85C \uBC14\uAFD4 \uC8FC\uC138\uC694.",
+        "",
+        `\uC6D0\uBCF8 \uC624\uB958: ${message}`
+      ].join("\n");
+    }
+    return `Gemini \uC694\uCCAD \uC2E4\uD328. \uD604\uC7AC \uBAA8\uB378: \`${model}\`.
+
+${message}`;
   }
   async buildContext() {
     const files = this.plugin.settings.files;
