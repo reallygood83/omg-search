@@ -291,26 +291,62 @@
 }
 
 .gemini-chat-citation-card {
-	display: inline-block;
-	margin-right: 8px;
+	display: block;
+	width: 100%;
+	padding: 10px 12px;
+	margin-bottom: 10px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+}
+
+.gemini-chat-citation-header {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 2px;
 	margin-bottom: 8px;
 }
 
-.gemini-chat-citation-link {
-	display: inline-block;
-	padding: 6px 12px;
-	background: var(--background-primary);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: 6px;
-	font-size: 12px;
+.gemini-chat-citation-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: 600;
+	font-size: 13px;
 	color: var(--text-normal);
-	text-decoration: none;
-	cursor: pointer;
-	transition: all 0.2s ease;
 }
 
-.gemini-chat-citation-link:hover {
-	background: var(--background-modifier-hover);
+.gemini-chat-citation-path {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.gemini-chat-citation-excerpt {
+	margin: 0 0 10px;
+	color: var(--text-muted);
+	font-size: 12px;
+	line-height: 1.45;
+}
+
+.gemini-chat-citation-actions {
+	display: flex;
+	justify-content: flex-end;
+}
+
+.gemini-chat-citation-open {
+	padding: 4px 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.gemini-chat-citation-open:hover {
 	border-color: var(--interactive-accent);
 	color: var(--interactive-accent);
 }

@@ -410,16 +410,7 @@ export class ChatView extends ItemView {
 			citationsEl.createEl('div', { cls: 'gemini-chat-citations-label', text: '📎 Sources:' });
 
 			for (const citation of message.citations) {
-				const citationCard = citationsEl.createDiv({ cls: 'gemini-chat-citation-card' });
-				const citationLink = citationCard.createEl('a', {
-					cls: 'gemini-chat-citation-link',
-					text: `📄 ${citation.sourcePath}`
-				});
-
-				citationLink.addEventListener('click', (e) => {
-					e.preventDefault();
-					this.openNote(citation.sourcePath);
-				});
+				this.renderCitationPreview(citationsEl, citation);
 			}
 		}
 
@@ -517,6 +508,97 @@ export class ChatView extends ItemView {
 				new Notice(`Note not found: ${path}`);
 			}
 		}
+	}
+
+	private renderCitationPreview(container: HTMLElement, citation: Citation) {
+		const card = container.createDiv({ cls: 'gemini-chat-citation-card' });
+		const file = this.resolveCitationFile(citation.sourcePath);
+		const title = file?.basename || this.getCitationTitle(citation.sourcePath);
+
+		const header = card.createDiv({ cls: 'gemini-chat-citation-header' });
+		header.createEl('div', { cls: 'gemini-chat-citation-title', text: title });
+		header.createEl('div', {
+			cls: 'gemini-chat-citation-path',
+			text: file?.path || citation.sourcePath
+		});
+
+		const excerptEl = card.createEl('p', {
+			cls: 'gemini-chat-citation-excerpt',
+			text: file ? 'Loading preview...' : 'Source note was not found in this vault.'
+		});
+
+		const actions = card.createDiv({ cls: 'gemini-chat-citation-actions' });
+		const openButton = actions.createEl('button', {
+			cls: 'gemini-chat-citation-open',
+			text: file ? 'Open note' : 'Find note'
+		});
+		openButton.addEventListener('click', () => this.openNote(citation.sourcePath));
+
+		if (!file) return;
+
+		this.app.vault.read(file)
+			.then(content => {
+				excerptEl.setText(this.makeExcerpt(content));
+			})
+			.catch(() => {
+				excerptEl.setText('Preview could not be loaded.');
+			});
+	}
+
+	private resolveCitationFile(path: string): TFile | null {
+		const candidates = this.getCitationPathCandidates(path);
+		for (const candidate of candidates) {
+			const file = this.app.vault.getAbstractFileByPath(candidate);
+			if (file instanceof TFile) return file;
+		}
+
+		const normalizedCandidates = new Set(candidates.map(candidate => this.normalizeCitationPath(candidate)));
+		return this.app.vault.getMarkdownFiles().find(file => {
+			const normalizedPath = this.normalizeCitationPath(file.path);
+			const normalizedName = this.normalizeCitationPath(file.name);
+			return normalizedCandidates.has(normalizedPath) ||
+				normalizedCandidates.has(normalizedName) ||
+				Array.from(normalizedCandidates).some(candidate =>
+					normalizedPath.endsWith(candidate) || normalizedName === candidate
+				);
+		}) || null;
+	}
+
+	private getCitationPathCandidates(path: string): string[] {
+		const cleaned = path
+			.trim()
+			.replace(/^\[\[/, '')
+			.replace(/\]\]$/, '')
+			.replace(/^["']|["']$/g, '')
+			.split('|')[0]
+			.trim();
+		if (!cleaned) return [];
+		const candidates = [cleaned];
+		if (!cleaned.endsWith('.md')) candidates.push(`${cleaned}.md`);
+		return Array.from(new Set(candidates));
+	}
+
+	private normalizeCitationPath(path: string): string {
+		return path.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
+	}
+
+	private getCitationTitle(path: string): string {
+		const cleaned = this.getCitationPathCandidates(path)[0] || path;
+		return cleaned.split('/').pop()?.replace(/\.md$/i, '') || cleaned;
+	}
+
+	private makeExcerpt(content: string): string {
+		const stripped = content
+			.replace(/^---[\s\S]*?---/, '')
+			.replace(/```[\s\S]*?```/g, '')
+			.replace(/!\[[^\]]*]\([^)]+\)/g, '')
+			.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1')
+			.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+			.replace(/[#>*_`~-]/g, ' ')
+			.replace(/\s+/g, ' ')
+			.trim();
+		if (!stripped) return 'This source note has no previewable text.';
+		return stripped.length > 220 ? `${stripped.slice(0, 220).trim()}...` : stripped;
 	}
 
 	private clearChat() {
