@@ -498,6 +498,16 @@ export class ChatView extends ItemView {
 			}
 		}
 
+		if (message.logPath) {
+			const logEl = contentWrapper.createDiv({ cls: 'gemini-chat-log-link' });
+			logEl.createEl('span', { text: 'Log: ' });
+			const logLink = logEl.createEl('a', { text: message.logPath, href: '#' });
+			logLink.addEventListener('click', async (event) => {
+				event.preventDefault();
+				await this.app.workspace.openLinkText(message.logPath || '', '', true);
+			});
+		}
+
 		// Add Apply/Copy buttons for model responses
 		if (message.role === 'model' && !message.isStreaming) {
 			this.renderActionButtons(contentWrapper, message);

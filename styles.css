@@ -336,6 +336,17 @@
 	color: var(--interactive-accent);
 }
 
+.gemini-chat-log-link {
+	margin-top: 8px;
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
+.gemini-chat-log-link a {
+	color: var(--text-accent);
+	text-decoration: none;
+}
+
 .gemini-chat-inline-citation {
 	display: inline;
 	padding: 2px 6px;

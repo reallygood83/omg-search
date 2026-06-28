@@ -1705,23 +1705,39 @@ var GeminiService = class {
   // ==================== Chat / RAG ====================
   async chat(userMessage) {
     this.ensureCurrentModel();
+    const logPath = await this.createChatLog(userMessage);
     if (!this.plugin.settings.apiKey) {
+      await this.appendChatLog(logPath, {
+        event: "failed",
+        reason: "missing_api_key"
+      });
       return {
         role: "model",
-        content: "Gemini API \uD0A4\uAC00 \uC124\uC815\uB418\uC5B4 \uC788\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694."
+        content: "Gemini API \uD0A4\uAC00 \uC124\uC815\uB418\uC5B4 \uC788\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.",
+        logPath
       };
     }
     try {
-      const fileSearchResponse = await this.chatWithFileSearch(userMessage);
+      const fileSearchResponse = await this.chatWithFileSearch(userMessage, logPath);
       if (fileSearchResponse) {
         return fileSearchResponse;
       }
       if (!this.model) {
+        await this.appendChatLog(logPath, {
+          event: "failed",
+          reason: "model_not_initialized"
+        });
         return {
           role: "model",
-          content: "Gemini API \uD0A4\uAC00 \uC124\uC815\uB418\uC5B4 \uC788\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694."
+          content: "Gemini API \uD0A4\uAC00 \uC124\uC815\uB418\uC5B4 \uC788\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.",
+          logPath
         };
       }
+      await this.appendChatLog(logPath, {
+        event: "fallback_context_start",
+        reason: "file_search_unavailable",
+        syncedFileCount: this.getSyncedFileCount()
+      });
       const context = await this.buildContext();
       const systemPrompt = `You are a helpful assistant that answers questions based on the user's personal notes from their Obsidian vault.
 
@@ -1780,6 +1796,15 @@ ${userMessage}`))
         text,
         this.extractCitations(text)
       );
+      await this.appendChatLog(logPath, {
+        event: "fallback_context_success",
+        inputTokens,
+        outputTokens,
+        estimatedCostUsd: this.plugin.estimateGeminiCost(this.plugin.settings.model, inputTokens, outputTokens),
+        citationCount: citations.length,
+        sourcePaths: citations.map((citation) => citation.sourcePath),
+        responsePreview: this.preview(cleanedText, 1e3)
+      });
       this.chatHistory.push({
         role: "model",
         parts: [{ text: cleanedText }]
@@ -1787,22 +1812,38 @@ ${userMessage}`))
       return {
         role: "model",
         content: cleanedText,
-        citations
+        citations,
+        logPath
       };
     } catch (error) {
       console.error("Chat error:", error);
+      await this.appendChatLog(logPath, {
+        event: "failed",
+        message: error instanceof Error ? error.message : String(error)
+      });
       return {
         role: "model",
-        content: this.formatChatError(error)
+        content: this.formatChatError(error),
+        logPath
       };
     }
   }
-  async chatWithFileSearch(userMessage) {
+  async chatWithFileSearch(userMessage, logPath) {
     var _a, _b;
     const corpusName = this.plugin.settings.corpusName || await this.getOrCreateCorpus();
-    if (!corpusName)
+    if (!corpusName) {
+      await this.appendChatLog(logPath, {
+        event: "file_search_skipped",
+        reason: "missing_file_search_store"
+      });
       return null;
+    }
     const input = this.buildFileSearchPrompt(userMessage);
+    await this.appendChatLog(logPath, {
+      event: "file_search_start",
+      corpusName,
+      inputTokensEstimate: this.plugin.estimateTokens(input)
+    });
     try {
       const response = await this.apiRequest(
         `${API_BASE_URL}/interactions?key=${this.plugin.settings.apiKey}`,
@@ -1818,11 +1859,21 @@ ${userMessage}`))
       );
       if (!response.ok) {
         console.warn("File Search interaction failed, falling back to local context:", response.data);
+        await this.appendChatLog(logPath, {
+          event: "file_search_failed",
+          status: response.status,
+          errorPreview: this.preview(JSON.stringify(response.data), 1e3)
+        });
         return null;
       }
       const { text, citations } = this.extractInteractionOutput(response.data);
-      if (!text.trim())
+      if (!text.trim()) {
+        await this.appendChatLog(logPath, {
+          event: "file_search_empty",
+          status: response.status
+        });
         return null;
+      }
       const recoveredCitations = await this.recoverSyncedCitations(
         userMessage,
         text,
@@ -1848,15 +1899,71 @@ ${userMessage}`))
         role: "model",
         parts: [{ text: cleanedText }]
       });
+      await this.appendChatLog(logPath, {
+        event: "file_search_success",
+        inputTokens,
+        outputTokens,
+        estimatedCostUsd: this.plugin.estimateGeminiCost(this.plugin.settings.model, inputTokens, outputTokens),
+        annotationCitationCount: citations.length,
+        recoveredCitationCount: recoveredCitations.length,
+        sourcePaths: recoveredCitations.map((citation) => citation.sourcePath),
+        rawResponsePreview: this.preview(text, 1e3),
+        cleanedResponsePreview: this.preview(cleanedText, 1e3)
+      });
       return {
         role: "model",
         content: cleanedText,
-        citations: recoveredCitations
+        citations: recoveredCitations,
+        logPath
       };
     } catch (error) {
       console.warn("File Search interaction error, falling back to local context:", error);
+      await this.appendChatLog(logPath, {
+        event: "file_search_error",
+        message: error instanceof Error ? error.message : String(error)
+      });
       return null;
     }
+  }
+  async createChatLog(userMessage) {
+    const folder = await this.plugin.ensureWorkspaceFolder("logs");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const path = `${folder}/chat-${stamp}.jsonl`;
+    const initial = {
+      event: "start",
+      timestamp: new Date().toISOString(),
+      model: this.plugin.settings.model,
+      corpusName: this.plugin.settings.corpusName || "",
+      syncFolders: this.plugin.settings.syncFolders,
+      syncedFileCount: this.getSyncedFileCount(),
+      promptPreview: this.preview(userMessage, 500)
+    };
+    await this.plugin.app.vault.create(path, `${JSON.stringify(initial)}
+`);
+    return path;
+  }
+  async appendChatLog(path, event) {
+    try {
+      const file = this.plugin.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof import_obsidian2.TFile))
+        return;
+      await this.plugin.app.vault.append(file, `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        ...event
+      })}
+`);
+    } catch (error) {
+      console.warn("Failed to append Chat log:", error);
+    }
+  }
+  preview(value, maxLength) {
+    return value.length > maxLength ? `${value.slice(0, maxLength)}...[truncated]` : value;
+  }
+  getSyncedFileCount() {
+    return Object.keys(this.plugin.settings.files).filter((path) => {
+      const syncData = this.plugin.settings.files[path];
+      return (syncData == null ? void 0 : syncData.status) === "synced" && this.plugin.isInSyncFolder(path);
+    }).length;
   }
   buildFileSearchPrompt(userMessage) {
     return [
@@ -2893,6 +3000,15 @@ var ChatView = class extends import_obsidian4.ItemView {
       for (const citation of message.citations) {
         this.renderCitationPreview(citationsEl, citation);
       }
+    }
+    if (message.logPath) {
+      const logEl = contentWrapper.createDiv({ cls: "gemini-chat-log-link" });
+      logEl.createEl("span", { text: "Log: " });
+      const logLink = logEl.createEl("a", { text: message.logPath, href: "#" });
+      logLink.addEventListener("click", async (event) => {
+        event.preventDefault();
+        await this.app.workspace.openLinkText(message.logPath || "", "", true);
+      });
     }
     if (message.role === "model" && !message.isStreaming) {
       this.renderActionButtons(contentWrapper, message);

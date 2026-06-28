@@ -23,6 +23,7 @@ export interface ChatMessage {
 	content: string;
 	citations?: Citation[];
 	isStreaming?: boolean;
+	logPath?: string;
 }
 
 export interface Citation {
@@ -521,26 +522,43 @@ export class GeminiService {
 
 	async chat(userMessage: string): Promise<ChatMessage> {
 		this.ensureCurrentModel();
+		const logPath = await this.createChatLog(userMessage);
 
 		if (!this.plugin.settings.apiKey) {
+			await this.appendChatLog(logPath, {
+				event: 'failed',
+				reason: 'missing_api_key'
+			});
 			return {
 				role: 'model',
-				content: 'Gemini API 키가 설정되어 있지 않습니다. 설정에서 API 키를 입력해 주세요.'
+				content: 'Gemini API 키가 설정되어 있지 않습니다. 설정에서 API 키를 입력해 주세요.',
+				logPath
 			};
 		}
 
 		try {
-			const fileSearchResponse = await this.chatWithFileSearch(userMessage);
+			const fileSearchResponse = await this.chatWithFileSearch(userMessage, logPath);
 			if (fileSearchResponse) {
 				return fileSearchResponse;
 			}
 
 			if (!this.model) {
+				await this.appendChatLog(logPath, {
+					event: 'failed',
+					reason: 'model_not_initialized'
+				});
 				return {
 					role: 'model',
-					content: 'Gemini API 키가 설정되어 있지 않습니다. 설정에서 API 키를 입력해 주세요.'
+					content: 'Gemini API 키가 설정되어 있지 않습니다. 설정에서 API 키를 입력해 주세요.',
+					logPath
 				};
 			}
+
+			await this.appendChatLog(logPath, {
+				event: 'fallback_context_start',
+				reason: 'file_search_unavailable',
+				syncedFileCount: this.getSyncedFileCount()
+			});
 
 			// Build context from synced files
 			const context = await this.buildContext();
@@ -608,6 +626,15 @@ Instructions:
 				text,
 				this.extractCitations(text)
 			);
+			await this.appendChatLog(logPath, {
+				event: 'fallback_context_success',
+				inputTokens,
+				outputTokens,
+				estimatedCostUsd: this.plugin.estimateGeminiCost(this.plugin.settings.model, inputTokens, outputTokens),
+				citationCount: citations.length,
+				sourcePaths: citations.map(citation => citation.sourcePath),
+				responsePreview: this.preview(cleanedText, 1000)
+			});
 
 			// Add assistant response to history
 			this.chatHistory.push({
@@ -618,22 +645,39 @@ Instructions:
 			return {
 				role: 'model',
 				content: cleanedText,
-				citations
+				citations,
+				logPath
 			};
 		} catch (error) {
 			console.error('Chat error:', error);
+			await this.appendChatLog(logPath, {
+				event: 'failed',
+				message: error instanceof Error ? error.message : String(error)
+			});
 			return {
 				role: 'model',
-				content: this.formatChatError(error)
+				content: this.formatChatError(error),
+				logPath
 			};
 		}
 	}
 
-	private async chatWithFileSearch(userMessage: string): Promise<ChatMessage | null> {
+	private async chatWithFileSearch(userMessage: string, logPath: string): Promise<ChatMessage | null> {
 		const corpusName = this.plugin.settings.corpusName || await this.getOrCreateCorpus();
-		if (!corpusName) return null;
+		if (!corpusName) {
+			await this.appendChatLog(logPath, {
+				event: 'file_search_skipped',
+				reason: 'missing_file_search_store'
+			});
+			return null;
+		}
 
 		const input = this.buildFileSearchPrompt(userMessage);
+		await this.appendChatLog(logPath, {
+			event: 'file_search_start',
+			corpusName,
+			inputTokensEstimate: this.plugin.estimateTokens(input)
+		});
 
 		try {
 			const response = await this.apiRequest(
@@ -651,11 +695,22 @@ Instructions:
 
 			if (!response.ok) {
 				console.warn('File Search interaction failed, falling back to local context:', response.data);
+				await this.appendChatLog(logPath, {
+					event: 'file_search_failed',
+					status: response.status,
+					errorPreview: this.preview(JSON.stringify(response.data), 1000)
+				});
 				return null;
 			}
 
 			const { text, citations } = this.extractInteractionOutput(response.data);
-			if (!text.trim()) return null;
+			if (!text.trim()) {
+				await this.appendChatLog(logPath, {
+					event: 'file_search_empty',
+					status: response.status
+				});
+				return null;
+			}
 			const recoveredCitations = await this.recoverSyncedCitations(
 				userMessage,
 				text,
@@ -683,16 +738,73 @@ Instructions:
 				role: 'model',
 				parts: [{ text: cleanedText }]
 			});
+			await this.appendChatLog(logPath, {
+				event: 'file_search_success',
+				inputTokens,
+				outputTokens,
+				estimatedCostUsd: this.plugin.estimateGeminiCost(this.plugin.settings.model, inputTokens, outputTokens),
+				annotationCitationCount: citations.length,
+				recoveredCitationCount: recoveredCitations.length,
+				sourcePaths: recoveredCitations.map(citation => citation.sourcePath),
+				rawResponsePreview: this.preview(text, 1000),
+				cleanedResponsePreview: this.preview(cleanedText, 1000)
+			});
 
 			return {
 				role: 'model',
 				content: cleanedText,
-				citations: recoveredCitations
+				citations: recoveredCitations,
+				logPath
 			};
 		} catch (error) {
 			console.warn('File Search interaction error, falling back to local context:', error);
+			await this.appendChatLog(logPath, {
+				event: 'file_search_error',
+				message: error instanceof Error ? error.message : String(error)
+			});
 			return null;
 		}
+	}
+
+	private async createChatLog(userMessage: string): Promise<string> {
+		const folder = await this.plugin.ensureWorkspaceFolder('logs');
+		const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+		const path = `${folder}/chat-${stamp}.jsonl`;
+		const initial = {
+			event: 'start',
+			timestamp: new Date().toISOString(),
+			model: this.plugin.settings.model,
+			corpusName: this.plugin.settings.corpusName || '',
+			syncFolders: this.plugin.settings.syncFolders,
+			syncedFileCount: this.getSyncedFileCount(),
+			promptPreview: this.preview(userMessage, 500)
+		};
+		await this.plugin.app.vault.create(path, `${JSON.stringify(initial)}\n`);
+		return path;
+	}
+
+	private async appendChatLog(path: string, event: Record<string, unknown>) {
+		try {
+			const file = this.plugin.app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile)) return;
+			await this.plugin.app.vault.append(file, `${JSON.stringify({
+				timestamp: new Date().toISOString(),
+				...event
+			})}\n`);
+		} catch (error) {
+			console.warn('Failed to append Chat log:', error);
+		}
+	}
+
+	private preview(value: string, maxLength: number): string {
+		return value.length > maxLength ? `${value.slice(0, maxLength)}...[truncated]` : value;
+	}
+
+	private getSyncedFileCount(): number {
+		return Object.keys(this.plugin.settings.files).filter(path => {
+			const syncData = this.plugin.settings.files[path];
+			return syncData?.status === 'synced' && this.plugin.isInSyncFolder(path);
+		}).length;
 	}
 
 	private buildFileSearchPrompt(userMessage: string): string {
