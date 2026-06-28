@@ -100,6 +100,9 @@ export default class GeminiSyncPlugin extends Plugin {
 		].filter(folder => folder.trim().length > 0))).sort();
 		delete this.settings.syncFolder;
 		this.settings.workspaceFolder = this.normalizeFolder(this.settings.workspaceFolder || DEFAULT_SETTINGS.workspaceFolder);
+		this.settings.agentOutputFolder = this.normalizeFolder(
+			this.settings.agentOutputFolder || `${this.settings.workspaceFolder}/agent`
+		);
 		this.settings.monthlyBudgetUsd = Number.isFinite(this.settings.monthlyBudgetUsd) ? this.settings.monthlyBudgetUsd : DEFAULT_SETTINGS.monthlyBudgetUsd;
 		this.settings.estimatedMonthlySpendUsd = Number.isFinite(this.settings.estimatedMonthlySpendUsd) ? this.settings.estimatedMonthlySpendUsd : DEFAULT_SETTINGS.estimatedMonthlySpendUsd;
 		this.settings.estimatedMonthlySpendMonth = this.settings.estimatedMonthlySpendMonth || this.getCurrentBudgetMonth();
@@ -265,6 +268,11 @@ export default class GeminiSyncPlugin extends Plugin {
 	async ensureWorkspaceFolder(subfolder?: string): Promise<string> {
 		const root = this.normalizeFolder(this.settings.workspaceFolder);
 		const path = subfolder ? `${root}/${subfolder}` : root;
+		return this.ensureVaultFolder(path);
+	}
+
+	async ensureVaultFolder(folder: string): Promise<string> {
+		const path = this.normalizeFolder(folder);
 		const parts = path.split('/');
 		let current = '';
 		for (const part of parts) {
@@ -274,6 +282,13 @@ export default class GeminiSyncPlugin extends Plugin {
 			}
 		}
 		return path;
+	}
+
+	openPluginSettings() {
+		const setting = (this.app as any).setting;
+		if (!setting) return;
+		setting.open();
+		setting.openTabById?.(this.manifest.id);
 	}
 
 	async activateChatView() {

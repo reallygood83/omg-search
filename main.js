@@ -36,6 +36,7 @@ var DEFAULT_SETTINGS = {
   model: "gemini-2.5-flash",
   syncFolders: [],
   workspaceFolder: "_omg",
+  agentOutputFolder: "_omg/agent",
   monthlyBudgetUsd: 7,
   estimatedMonthlySpendUsd: 0,
   estimatedMonthlySpendMonth: "",
@@ -117,6 +118,17 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
       (text) => text.setPlaceholder("_omg").setValue(this.plugin.settings.workspaceFolder).onChange(async (value) => {
         this.plugin.settings.workspaceFolder = value.trim() || "_omg";
         await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Agent Output Folder").setDesc("Agent-generated notes are saved here when you use Create New Note or Save from the Agent tab.").addText(
+      (text) => text.setPlaceholder("_omg/agent").setValue(this.plugin.settings.agentOutputFolder).onChange(async (value) => {
+        this.plugin.settings.agentOutputFolder = this.plugin.normalizeFolder(value.trim() || "_omg/agent");
+        await this.plugin.saveSettings();
+      })
+    ).addButton(
+      (button) => button.setButtonText("Create").onClick(async () => {
+        await this.plugin.ensureVaultFolder(this.plugin.settings.agentOutputFolder);
+        new import_obsidian.Notice(`Agent output folder is ready: ${this.plugin.settings.agentOutputFolder}`);
       })
     );
     new import_obsidian.Setting(containerEl).setName("Monthly Budget (USD)").setDesc("Soft guardrail shown in the dashboard before larger Gemini or Agent workflows.").addText(
@@ -2703,7 +2715,8 @@ var ChatView = class extends import_obsidian4.ItemView {
       { id: "chat", label: "Chat" },
       { id: "agent", label: "Agent" },
       { id: "budget", label: "Budget" },
-      { id: "workspace", label: "_omg" }
+      { id: "workspace", label: "_omg" },
+      { id: "settings", label: "Settings" }
     ];
     for (const tab of tabs) {
       const button = this.tabBarEl.createEl("button", {
@@ -2726,6 +2739,10 @@ var ChatView = class extends import_obsidian4.ItemView {
     }
     if (this.activeTab === "workspace") {
       this.renderWorkspaceTab();
+      return;
+    }
+    if (this.activeTab === "settings") {
+      this.renderSettingsTab();
       return;
     }
     this.messagesContainer = this.dashboardContentEl.createDiv({ cls: "gemini-chat-messages" });
@@ -2804,16 +2821,32 @@ var ChatView = class extends import_obsidian4.ItemView {
     const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel" });
     panel.createEl("h3", { text: `${this.plugin.settings.workspaceFolder} workspace` });
     panel.createEl("p", { text: "Generated Agent reports, compiled notes, graph JSON, and logs are kept separate from your source notes." });
-    const folders = ["compiled", "agent", "graph", "inbox", "logs"];
+    const folders = [
+      `${this.plugin.settings.workspaceFolder}/compiled`,
+      this.plugin.settings.agentOutputFolder,
+      `${this.plugin.settings.workspaceFolder}/graph`,
+      `${this.plugin.settings.workspaceFolder}/inbox`,
+      `${this.plugin.settings.workspaceFolder}/logs`
+    ];
     const list = panel.createEl("ul");
     for (const folder of folders)
-      list.createEl("li", { text: `${this.plugin.settings.workspaceFolder}/${folder}` });
+      list.createEl("li", { text: folder });
     const createBtn = panel.createEl("button", { cls: "gemini-chat-action-btn", text: "Create workspace folders" });
     createBtn.addEventListener("click", async () => {
       for (const folder of folders)
-        await this.plugin.ensureWorkspaceFolder(folder);
+        await this.plugin.ensureVaultFolder(folder);
       new import_obsidian4.Notice("Master of Knowledge workspace folders are ready.");
     });
+  }
+  renderSettingsTab() {
+    const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel" });
+    panel.createEl("h3", { text: "Settings" });
+    panel.createEl("p", { text: "Open plugin settings to change sync folders, Gemini model, Agent CLI path, budget, and Agent output folder." });
+    const openBtn = panel.createEl("button", {
+      cls: "gemini-chat-action-btn",
+      text: "Open Master of Knowledge settings"
+    });
+    openBtn.addEventListener("click", () => this.plugin.openPluginSettings());
   }
   showWelcomeMessage() {
     this.welcomeEl = this.messagesContainer.createDiv({ cls: "gemini-chat-welcome" });
@@ -3016,6 +3049,15 @@ var ChatView = class extends import_obsidian4.ItemView {
       logLink.addEventListener("click", async (event) => {
         event.preventDefault();
         await this.app.workspace.openLinkText(message.logPath || "", "", true);
+      });
+    }
+    if (message.savedNotePath) {
+      const savedEl = contentWrapper.createDiv({ cls: "gemini-chat-log-link" });
+      savedEl.createEl("span", { text: "Saved note: " });
+      const savedLink = savedEl.createEl("a", { text: message.savedNotePath, href: "#" });
+      savedLink.addEventListener("click", async (event) => {
+        event.preventDefault();
+        await this.app.workspace.openLinkText(message.savedNotePath || "", "", true);
       });
     }
     if (message.role === "model" && !message.isStreaming) {
@@ -3234,9 +3276,9 @@ var ChatView = class extends import_obsidian4.ItemView {
     const menuItems = [
       { text: "\u{1F4CD} Insert at Cursor", action: () => this.insertAtCursor(message.content, message.citations) },
       { text: "\u{1F4CE} Append to Current Note", action: () => this.appendToCurrentNote(message.content, message.citations) },
-      { text: "\u{1F4C4} Create New Note", action: () => this.createNewNote(message.content, message.citations) },
+      { text: "\u{1F4C4} Create New Note", action: () => this.createNewNote(message) },
       { text: "\u{1F4C2} Select Note...", action: () => this.selectNoteToApply(message.content, message.citations) },
-      { text: `\u{1F9E0} Save to ${this.plugin.settings.workspaceFolder}`, action: () => this.saveToWorkspace(message.content, message.citations) }
+      { text: `\u{1F9E0} Save to ${this.getWorkspaceSaveLabel()}`, action: () => this.saveToWorkspace(message) }
     ];
     for (const item of menuItems) {
       const menuItem = dropdownMenu.createEl("div", {
@@ -3315,17 +3357,22 @@ ${content}`;
     result += "\n---\n";
     return result;
   }
-  async saveToWorkspace(content, citations) {
-    const folder = await this.plugin.ensureWorkspaceFolder(this.activeTab === "agent" ? "agent" : "compiled");
+  getWorkspaceSaveLabel() {
+    return this.activeTab === "agent" ? this.plugin.settings.agentOutputFolder : `${this.plugin.settings.workspaceFolder}/compiled`;
+  }
+  async saveToWorkspace(message) {
+    const folder = this.activeTab === "agent" ? await this.plugin.ensureVaultFolder(this.plugin.settings.agentOutputFolder) : await this.plugin.ensureWorkspaceFolder("compiled");
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10);
     const timeStr = now.toTimeString().slice(0, 5).replace(":", "-");
     const fileName = `${folder}/Master of Knowledge ${dateStr} ${timeStr}.md`;
-    const formattedContent = this.formatContentWithMetadata(content, citations);
+    const formattedContent = this.formatContentWithMetadata(message.content, message.citations);
     try {
       const file = await this.app.vault.create(fileName, formattedContent);
+      message.savedNotePath = file.path;
       await this.app.workspace.openLinkText(file.path, "", true);
       new import_obsidian4.Notice(`\u2705 Saved to ${file.path}`);
+      this.renderActiveTab();
     } catch (error) {
       new import_obsidian4.Notice("Failed to save workspace note.");
       console.error("Workspace save error:", error);
@@ -3366,16 +3413,20 @@ ${content}`;
     new import_obsidian4.Notice(`\u2705 Content appended to ${activeFile.name}!`);
   }
   // Create new note with content
-  async createNewNote(content, citations) {
+  async createNewNote(message) {
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10);
     const timeStr = now.toTimeString().slice(0, 5).replace(":", "-");
-    const fileName = `Gemini Response ${dateStr} ${timeStr}.md`;
-    const formattedContent = this.formatContentWithMetadata(content, citations);
+    const folder = this.activeTab === "agent" ? await this.plugin.ensureVaultFolder(this.plugin.settings.agentOutputFolder) : "";
+    const baseName = this.activeTab === "agent" ? "Agent Result" : "Gemini Response";
+    const fileName = folder ? `${folder}/${baseName} ${dateStr} ${timeStr}.md` : `${baseName} ${dateStr} ${timeStr}.md`;
+    const formattedContent = this.formatContentWithMetadata(message.content, message.citations);
     try {
       const newFile = await this.app.vault.create(fileName, formattedContent);
+      message.savedNotePath = newFile.path;
       await this.app.workspace.openLinkText(newFile.path, "", true);
-      new import_obsidian4.Notice(`\u2705 Created new note: ${fileName}`);
+      new import_obsidian4.Notice(`\u2705 Created new note: ${newFile.path}`);
+      this.renderActiveTab();
     } catch (error) {
       new import_obsidian4.Notice("Failed to create note. Please try again.");
       console.error("Create note error:", error);
@@ -3951,6 +4002,9 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
     ].filter((folder) => folder.trim().length > 0))).sort();
     delete this.settings.syncFolder;
     this.settings.workspaceFolder = this.normalizeFolder(this.settings.workspaceFolder || DEFAULT_SETTINGS.workspaceFolder);
+    this.settings.agentOutputFolder = this.normalizeFolder(
+      this.settings.agentOutputFolder || `${this.settings.workspaceFolder}/agent`
+    );
     this.settings.monthlyBudgetUsd = Number.isFinite(this.settings.monthlyBudgetUsd) ? this.settings.monthlyBudgetUsd : DEFAULT_SETTINGS.monthlyBudgetUsd;
     this.settings.estimatedMonthlySpendUsd = Number.isFinite(this.settings.estimatedMonthlySpendUsd) ? this.settings.estimatedMonthlySpendUsd : DEFAULT_SETTINGS.estimatedMonthlySpendUsd;
     this.settings.estimatedMonthlySpendMonth = this.settings.estimatedMonthlySpendMonth || this.getCurrentBudgetMonth();
@@ -4088,6 +4142,10 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
   async ensureWorkspaceFolder(subfolder) {
     const root = this.normalizeFolder(this.settings.workspaceFolder);
     const path = subfolder ? `${root}/${subfolder}` : root;
+    return this.ensureVaultFolder(path);
+  }
+  async ensureVaultFolder(folder) {
+    const path = this.normalizeFolder(folder);
     const parts = path.split("/");
     let current = "";
     for (const part of parts) {
@@ -4097,6 +4155,14 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
       }
     }
     return path;
+  }
+  openPluginSettings() {
+    var _a;
+    const setting = this.app.setting;
+    if (!setting)
+      return;
+    setting.open();
+    (_a = setting.openTabById) == null ? void 0 : _a.call(setting, this.manifest.id);
   }
   async activateChatView() {
     const { workspace } = this.app;

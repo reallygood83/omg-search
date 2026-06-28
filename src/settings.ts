@@ -14,6 +14,7 @@ export interface GeminiSyncSettings {
 	syncFolders: string[];
 	syncFolder?: string; // Legacy setting migrated on load.
 	workspaceFolder: string;
+	agentOutputFolder: string;
 	monthlyBudgetUsd: number;
 	estimatedMonthlySpendUsd: number;
 	estimatedMonthlySpendMonth: string;
@@ -36,6 +37,7 @@ export const DEFAULT_SETTINGS: GeminiSyncSettings = {
 	model: 'gemini-2.5-flash',
 	syncFolders: [],
 	workspaceFolder: '_omg',
+	agentOutputFolder: '_omg/agent',
 	monthlyBudgetUsd: 7,
 	estimatedMonthlySpendUsd: 0,
 	estimatedMonthlySpendMonth: '',
@@ -159,6 +161,25 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.workspaceFolder = value.trim() || '_omg';
 					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Agent Output Folder')
+			.setDesc('Agent-generated notes are saved here when you use Create New Note or Save from the Agent tab.')
+			.addText(text => text
+				.setPlaceholder('_omg/agent')
+				.setValue(this.plugin.settings.agentOutputFolder)
+				.onChange(async (value) => {
+					this.plugin.settings.agentOutputFolder = this.plugin.normalizeFolder(value.trim() || '_omg/agent');
+					await this.plugin.saveSettings();
+				})
+			)
+			.addButton(button => button
+				.setButtonText('Create')
+				.onClick(async () => {
+					await this.plugin.ensureVaultFolder(this.plugin.settings.agentOutputFolder);
+					new Notice(`Agent output folder is ready: ${this.plugin.settings.agentOutputFolder}`);
 				})
 			);
 

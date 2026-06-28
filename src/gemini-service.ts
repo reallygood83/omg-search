@@ -24,6 +24,7 @@ export interface ChatMessage {
 	citations?: Citation[];
 	isStreaming?: boolean;
 	logPath?: string;
+	savedNotePath?: string;
 }
 
 export interface Citation {

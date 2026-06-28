@@ -2,7 +2,7 @@ import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, TFile, Modal, FuzzyS
 import GeminiSyncPlugin from './main';
 import { ChatMessage, Citation } from './gemini-service';
 
-type DashboardTab = 'chat' | 'agent' | 'budget' | 'workspace';
+type DashboardTab = 'chat' | 'agent' | 'budget' | 'workspace' | 'settings';
 
 // Modal for selecting a note to apply content
 class NoteSelectorModal extends FuzzySuggestModal<TFile> {
@@ -138,7 +138,8 @@ export class ChatView extends ItemView {
 			{ id: 'chat', label: 'Chat' },
 			{ id: 'agent', label: 'Agent' },
 			{ id: 'budget', label: 'Budget' },
-			{ id: 'workspace', label: '_omg' }
+			{ id: 'workspace', label: '_omg' },
+			{ id: 'settings', label: 'Settings' }
 		];
 
 		for (const tab of tabs) {
@@ -165,6 +166,11 @@ export class ChatView extends ItemView {
 
 		if (this.activeTab === 'workspace') {
 			this.renderWorkspaceTab();
+			return;
+		}
+
+		if (this.activeTab === 'settings') {
+			this.renderSettingsTab();
 			return;
 		}
 
@@ -255,14 +261,31 @@ export class ChatView extends ItemView {
 		const panel = this.dashboardContentEl.createDiv({ cls: 'mok-panel' });
 		panel.createEl('h3', { text: `${this.plugin.settings.workspaceFolder} workspace` });
 		panel.createEl('p', { text: 'Generated Agent reports, compiled notes, graph JSON, and logs are kept separate from your source notes.' });
-		const folders = ['compiled', 'agent', 'graph', 'inbox', 'logs'];
+		const folders = [
+			`${this.plugin.settings.workspaceFolder}/compiled`,
+			this.plugin.settings.agentOutputFolder,
+			`${this.plugin.settings.workspaceFolder}/graph`,
+			`${this.plugin.settings.workspaceFolder}/inbox`,
+			`${this.plugin.settings.workspaceFolder}/logs`
+		];
 		const list = panel.createEl('ul');
-		for (const folder of folders) list.createEl('li', { text: `${this.plugin.settings.workspaceFolder}/${folder}` });
+		for (const folder of folders) list.createEl('li', { text: folder });
 		const createBtn = panel.createEl('button', { cls: 'gemini-chat-action-btn', text: 'Create workspace folders' });
 		createBtn.addEventListener('click', async () => {
-			for (const folder of folders) await this.plugin.ensureWorkspaceFolder(folder);
+			for (const folder of folders) await this.plugin.ensureVaultFolder(folder);
 			new Notice('Master of Knowledge workspace folders are ready.');
 		});
+	}
+
+	private renderSettingsTab() {
+		const panel = this.dashboardContentEl.createDiv({ cls: 'mok-panel' });
+		panel.createEl('h3', { text: 'Settings' });
+		panel.createEl('p', { text: 'Open plugin settings to change sync folders, Gemini model, Agent CLI path, budget, and Agent output folder.' });
+		const openBtn = panel.createEl('button', {
+			cls: 'gemini-chat-action-btn',
+			text: 'Open Master of Knowledge settings'
+		});
+		openBtn.addEventListener('click', () => this.plugin.openPluginSettings());
 	}
 
 	private showWelcomeMessage() {
@@ -514,6 +537,16 @@ export class ChatView extends ItemView {
 			logLink.addEventListener('click', async (event) => {
 				event.preventDefault();
 				await this.app.workspace.openLinkText(message.logPath || '', '', true);
+			});
+		}
+
+		if (message.savedNotePath) {
+			const savedEl = contentWrapper.createDiv({ cls: 'gemini-chat-log-link' });
+			savedEl.createEl('span', { text: 'Saved note: ' });
+			const savedLink = savedEl.createEl('a', { text: message.savedNotePath, href: '#' });
+			savedLink.addEventListener('click', async (event) => {
+				event.preventDefault();
+				await this.app.workspace.openLinkText(message.savedNotePath || '', '', true);
 			});
 		}
 
@@ -800,9 +833,9 @@ export class ChatView extends ItemView {
 		const menuItems = [
 			{ text: '📍 Insert at Cursor', action: () => this.insertAtCursor(message.content, message.citations) },
 			{ text: '📎 Append to Current Note', action: () => this.appendToCurrentNote(message.content, message.citations) },
-			{ text: '📄 Create New Note', action: () => this.createNewNote(message.content, message.citations) },
+			{ text: '📄 Create New Note', action: () => this.createNewNote(message) },
 			{ text: '📂 Select Note...', action: () => this.selectNoteToApply(message.content, message.citations) },
-			{ text: `🧠 Save to ${this.plugin.settings.workspaceFolder}`, action: () => this.saveToWorkspace(message.content, message.citations) }
+			{ text: `🧠 Save to ${this.getWorkspaceSaveLabel()}`, action: () => this.saveToWorkspace(message) }
 		];
 
 		for (const item of menuItems) {
@@ -896,17 +929,27 @@ export class ChatView extends ItemView {
 		return result;
 	}
 
-	private async saveToWorkspace(content: string, citations?: Citation[]) {
-		const folder = await this.plugin.ensureWorkspaceFolder(this.activeTab === 'agent' ? 'agent' : 'compiled');
+	private getWorkspaceSaveLabel(): string {
+		return this.activeTab === 'agent'
+			? this.plugin.settings.agentOutputFolder
+			: `${this.plugin.settings.workspaceFolder}/compiled`;
+	}
+
+	private async saveToWorkspace(message: ChatMessage) {
+		const folder = this.activeTab === 'agent'
+			? await this.plugin.ensureVaultFolder(this.plugin.settings.agentOutputFolder)
+			: await this.plugin.ensureWorkspaceFolder('compiled');
 		const now = new Date();
 		const dateStr = now.toISOString().slice(0, 10);
 		const timeStr = now.toTimeString().slice(0, 5).replace(':', '-');
 		const fileName = `${folder}/Master of Knowledge ${dateStr} ${timeStr}.md`;
-		const formattedContent = this.formatContentWithMetadata(content, citations);
+		const formattedContent = this.formatContentWithMetadata(message.content, message.citations);
 		try {
 			const file = await this.app.vault.create(fileName, formattedContent);
+			message.savedNotePath = file.path;
 			await this.app.workspace.openLinkText(file.path, '', true);
 			new Notice(`✅ Saved to ${file.path}`);
+			this.renderActiveTab();
 		} catch (error) {
 			new Notice('Failed to save workspace note.');
 			console.error('Workspace save error:', error);
@@ -956,18 +999,26 @@ export class ChatView extends ItemView {
 	}
 
 	// Create new note with content
-	private async createNewNote(content: string, citations?: Citation[]) {
+	private async createNewNote(message: ChatMessage) {
 		const now = new Date();
 		const dateStr = now.toISOString().slice(0, 10);
 		const timeStr = now.toTimeString().slice(0, 5).replace(':', '-');
-		const fileName = `Gemini Response ${dateStr} ${timeStr}.md`;
+		const folder = this.activeTab === 'agent'
+			? await this.plugin.ensureVaultFolder(this.plugin.settings.agentOutputFolder)
+			: '';
+		const baseName = this.activeTab === 'agent' ? 'Agent Result' : 'Gemini Response';
+		const fileName = folder
+			? `${folder}/${baseName} ${dateStr} ${timeStr}.md`
+			: `${baseName} ${dateStr} ${timeStr}.md`;
 
-		const formattedContent = this.formatContentWithMetadata(content, citations);
+		const formattedContent = this.formatContentWithMetadata(message.content, message.citations);
 
 		try {
 			const newFile = await this.app.vault.create(fileName, formattedContent);
+			message.savedNotePath = newFile.path;
 			await this.app.workspace.openLinkText(newFile.path, '', true);
-			new Notice(`✅ Created new note: ${fileName}`);
+			new Notice(`✅ Created new note: ${newFile.path}`);
+			this.renderActiveTab();
 		} catch (error) {
 			new Notice('Failed to create note. Please try again.');
 			console.error('Create note error:', error);
