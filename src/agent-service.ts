@@ -19,7 +19,8 @@ export class AgentService {
 		const started = Date.now();
 		const command = this.plugin.settings.agentCliPath.trim() || 'agy';
 		const agentPrompt = this.buildPrompt(prompt);
-		const args = ['--print', agentPrompt];
+		const timeoutSeconds = Math.max(30, this.plugin.settings.agentTimeoutSeconds || 60);
+		const args = ['--print-timeout', `${timeoutSeconds}s`, '--print', agentPrompt];
 		const resolvedCommand = this.resolveCommand(command);
 
 		try {

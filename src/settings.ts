@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS: GeminiSyncSettings = {
 	estimatedMonthlySpendMonth: '',
 	agentCliPath: 'agy',
 	agentPermissionMode: 'review',
-	agentTimeoutSeconds: 180,
+	agentTimeoutSeconds: 60,
 	agentEnvironment: '',
 	agentWebSearchEnabled: false,
 	corpusName: '',

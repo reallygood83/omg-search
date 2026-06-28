@@ -219,6 +219,10 @@ export class ChatView extends ItemView {
 		if (this.isLoading && this.loadingTab === this.activeTab) {
 			const loadingEl = this.messagesContainer.createDiv({ cls: 'gemini-chat-loading' });
 			loadingEl.createEl('span', { cls: 'gemini-chat-loading-dots', text: '●●●' });
+			loadingEl.createEl('span', {
+				cls: 'gemini-chat-loading-label',
+				text: this.activeTab === 'agent' ? 'Agent is still running...' : 'Thinking...'
+			});
 		}
 	}
 
@@ -351,6 +355,17 @@ export class ChatView extends ItemView {
 
 		const loadingEl = requestContainer.createDiv({ cls: 'gemini-chat-loading' });
 		loadingEl.createEl('span', { cls: 'gemini-chat-loading-dots', text: '●●●' });
+		const loadingLabel = loadingEl.createEl('span', {
+			cls: 'gemini-chat-loading-label',
+			text: requestTab === 'agent' ? 'Agent running 0s...' : 'Thinking...'
+		});
+		const startedAt = Date.now();
+		const loadingTimer = requestTab === 'agent'
+			? window.setInterval(() => {
+				const seconds = Math.floor((Date.now() - startedAt) / 1000);
+				loadingLabel.setText(`Agent running ${seconds}s...`);
+			}, 1000)
+			: null;
 
 		// Scroll to bottom
 		this.scrollToBottom();
@@ -368,6 +383,7 @@ export class ChatView extends ItemView {
 			};
 			list.push(errorMessage);
 		} finally {
+			if (loadingTimer !== null) window.clearInterval(loadingTimer);
 			loadingEl.remove();
 			this.isLoading = false;
 			this.loadingTab = null;

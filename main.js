@@ -41,7 +41,7 @@ var DEFAULT_SETTINGS = {
   estimatedMonthlySpendMonth: "",
   agentCliPath: "agy",
   agentPermissionMode: "review",
-  agentTimeoutSeconds: 180,
+  agentTimeoutSeconds: 60,
   agentEnvironment: "",
   agentWebSearchEnabled: false,
   corpusName: "",
@@ -2256,6 +2256,10 @@ var ChatView = class extends import_obsidian4.ItemView {
     if (this.isLoading && this.loadingTab === this.activeTab) {
       const loadingEl = this.messagesContainer.createDiv({ cls: "gemini-chat-loading" });
       loadingEl.createEl("span", { cls: "gemini-chat-loading-dots", text: "\u25CF\u25CF\u25CF" });
+      loadingEl.createEl("span", {
+        cls: "gemini-chat-loading-label",
+        text: this.activeTab === "agent" ? "Agent is still running..." : "Thinking..."
+      });
     }
   }
   renderBudgetTab() {
@@ -2367,6 +2371,15 @@ var ChatView = class extends import_obsidian4.ItemView {
     requestButton.textContent = "\u23F3";
     const loadingEl = requestContainer.createDiv({ cls: "gemini-chat-loading" });
     loadingEl.createEl("span", { cls: "gemini-chat-loading-dots", text: "\u25CF\u25CF\u25CF" });
+    const loadingLabel = loadingEl.createEl("span", {
+      cls: "gemini-chat-loading-label",
+      text: requestTab === "agent" ? "Agent running 0s..." : "Thinking..."
+    });
+    const startedAt = Date.now();
+    const loadingTimer = requestTab === "agent" ? window.setInterval(() => {
+      const seconds = Math.floor((Date.now() - startedAt) / 1e3);
+      loadingLabel.setText(`Agent running ${seconds}s...`);
+    }, 1e3) : null;
     this.scrollToBottom();
     try {
       const response = requestTab === "agent" ? await this.runAgentMessage(text) : await this.plugin.geminiService.chat(text);
@@ -2378,6 +2391,8 @@ var ChatView = class extends import_obsidian4.ItemView {
       };
       list.push(errorMessage);
     } finally {
+      if (loadingTimer !== null)
+        window.clearInterval(loadingTimer);
       loadingEl.remove();
       this.isLoading = false;
       this.loadingTab = null;
@@ -2771,7 +2786,8 @@ var AgentService = class {
     const started = Date.now();
     const command = this.plugin.settings.agentCliPath.trim() || "agy";
     const agentPrompt = this.buildPrompt(prompt);
-    const args = ["--print", agentPrompt];
+    const timeoutSeconds = Math.max(30, this.plugin.settings.agentTimeoutSeconds || 60);
+    const args = ["--print-timeout", `${timeoutSeconds}s`, "--print", agentPrompt];
     const resolvedCommand = this.resolveCommand(command);
     try {
       if (!resolvedCommand) {
