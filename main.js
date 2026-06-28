@@ -2540,6 +2540,8 @@ var ChatView = class extends import_obsidian4.ItemView {
         "---",
         `Agent command: \`${result.command}\``,
         `Duration: ${(result.durationMs / 1e3).toFixed(1)}s`,
+        result.logPath ? `Agent log: [[${result.logPath}]]` : "",
+        result.agyLogPath ? `AGY log: [[${result.agyLogPath}]]` : "",
         result.exitCode === 0 ? "" : `Exit code: ${(_a = result.exitCode) != null ? _a : "unknown"}`
       ].filter(Boolean).join("\n")
     };
@@ -2908,42 +2910,69 @@ var AgentService = class {
     return true;
   }
   async run(prompt, onChunk) {
+    var _a;
     const started = Date.now();
     const command = this.plugin.settings.agentCliPath.trim() || "agy";
     const agentPrompt = await this.buildPrompt(prompt);
     const timeoutSeconds = Math.max(30, this.plugin.settings.agentTimeoutSeconds || 60);
-    const args = this.buildArgs(agentPrompt, timeoutSeconds);
     const resolvedCommand = this.resolveCommand(command);
+    const logRef = await this.createAgentLog(prompt, resolvedCommand || command, timeoutSeconds);
+    const args = this.buildArgs(agentPrompt, timeoutSeconds, logRef.agyAbsolutePath);
+    await this.appendAgentLog(logRef.vaultPath, {
+      event: "command",
+      command: resolvedCommand || command,
+      args: this.redactArgsForLog(args),
+      vaultPath: this.plugin.getVaultPath()
+    });
     try {
       if (!resolvedCommand) {
         throw Object.assign(new Error(this.getMissingCommandMessage(command)), {
           code: "ENOENT"
         });
       }
-      const { stdout, stderr } = await this.exec(resolvedCommand, args, onChunk);
+      const { stdout, stderr } = await this.exec(resolvedCommand, args, logRef.vaultPath, onChunk);
       const output = [stdout.trim(), stderr.trim() ? `
 
 ---
 Agent stderr:
 ${stderr.trim()}` : ""].join("").trim();
+      await this.appendAgentLog(logRef.vaultPath, {
+        event: "complete",
+        exitCode: 0,
+        durationMs: Date.now() - started
+      });
       return {
         content: output || "Agent completed without text output.",
         command: `${resolvedCommand} --print`,
         exitCode: 0,
-        durationMs: Date.now() - started
+        durationMs: Date.now() - started,
+        logPath: logRef.vaultPath,
+        agyLogPath: logRef.agyVaultPath
       };
     } catch (error) {
       if ((error == null ? void 0 : error.code) === "EAGENTSTOPPED") {
+        await this.appendAgentLog(logRef.vaultPath, {
+          event: "stopped",
+          durationMs: Date.now() - started
+        });
         return {
           content: "Agent run stopped by user.",
           command: `${resolvedCommand || command} --print`,
           exitCode: null,
-          durationMs: Date.now() - started
+          durationMs: Date.now() - started,
+          logPath: logRef.vaultPath,
+          agyLogPath: logRef.agyVaultPath
         };
       }
       const stdout = String((error == null ? void 0 : error.stdout) || "").trim();
       const stderr = String((error == null ? void 0 : error.stderr) || "").trim();
       const message = stderr || stdout || (error == null ? void 0 : error.message) || "Unknown agent error";
+      await this.appendAgentLog(logRef.vaultPath, {
+        event: "failed",
+        errorCode: (_a = error == null ? void 0 : error.code) != null ? _a : null,
+        message,
+        durationMs: Date.now() - started
+      });
       new import_obsidian5.Notice("Agent run failed. Check the result card for details.");
       return {
         content: `Agent run failed.
@@ -2951,14 +2980,18 @@ ${stderr.trim()}` : ""].join("").trim();
 ${message}`,
         command: `${resolvedCommand || command} --print`,
         exitCode: typeof (error == null ? void 0 : error.code) === "number" ? error.code : null,
-        durationMs: Date.now() - started
+        durationMs: Date.now() - started,
+        logPath: logRef.vaultPath,
+        agyLogPath: logRef.agyVaultPath
       };
     }
   }
-  buildArgs(agentPrompt, timeoutSeconds) {
+  buildArgs(agentPrompt, timeoutSeconds, agyLogPath) {
     const args = [
       "--add-dir",
       this.plugin.getVaultPath(),
+      "--log-file",
+      agyLogPath,
       "--print-timeout",
       `${timeoutSeconds}s`
     ];
@@ -3034,9 +3067,9 @@ ${truncated}
     }
     return contexts.join("\n") || "No synced notes are available in the selected sync folders.";
   }
-  exec(command, args, onChunk) {
+  exec(command, args, logPath, onChunk) {
     return new Promise((resolve, reject) => {
-      var _a, _b;
+      var _a, _b, _c;
       let stdout = "";
       let stderr = "";
       let settled = false;
@@ -3052,30 +3085,46 @@ ${truncated}
         windowsHide: true
       });
       this.activeChild = child;
+      void this.appendAgentLog(logPath, {
+        event: "spawn",
+        pid: (_a = child.pid) != null ? _a : null
+      });
       const timer = window.setTimeout(() => {
         settled = true;
         child.kill();
         if (this.activeChild === child)
           this.activeChild = null;
+        void this.appendAgentLog(logPath, {
+          event: "timeout",
+          timeoutMs,
+          stdoutLength: stdout.length,
+          stderrLength: stderr.length
+        });
         reject(Object.assign(new Error(`Agent timed out after ${Math.round(timeoutMs / 1e3)}s`), {
           code: "ETIMEDOUT",
           stdout,
           stderr
         }));
       }, timeoutMs);
-      (_a = child.stdout) == null ? void 0 : _a.on("data", (data) => {
+      (_b = child.stdout) == null ? void 0 : _b.on("data", (data) => {
         const chunk = data.toString();
         stdout += chunk;
         onChunk == null ? void 0 : onChunk(chunk, "stdout");
-        if (stdout.length + stderr.length > maxBuffer)
+        void this.appendAgentLog(logPath, { event: "stdout", chunk });
+        if (stdout.length + stderr.length > maxBuffer) {
+          void this.appendAgentLog(logPath, { event: "max_buffer", maxBuffer });
           child.kill();
+        }
       });
-      (_b = child.stderr) == null ? void 0 : _b.on("data", (data) => {
+      (_c = child.stderr) == null ? void 0 : _c.on("data", (data) => {
         const chunk = data.toString();
         stderr += chunk;
         onChunk == null ? void 0 : onChunk(chunk, "stderr");
-        if (stdout.length + stderr.length > maxBuffer)
+        void this.appendAgentLog(logPath, { event: "stderr", chunk });
+        if (stdout.length + stderr.length > maxBuffer) {
+          void this.appendAgentLog(logPath, { event: "max_buffer", maxBuffer });
           child.kill();
+        }
       });
       child.on("error", (error) => {
         if (settled)
@@ -3084,6 +3133,12 @@ ${truncated}
         if (this.activeChild === child)
           this.activeChild = null;
         window.clearTimeout(timer);
+        void this.appendAgentLog(logPath, {
+          event: "error",
+          message: error.message,
+          stdoutLength: stdout.length,
+          stderrLength: stderr.length
+        });
         if (this.stopWasRequested) {
           this.stopWasRequested = false;
           reject(Object.assign(new Error("Agent run stopped by user."), {
@@ -3102,6 +3157,12 @@ ${truncated}
         if (this.activeChild === child)
           this.activeChild = null;
         window.clearTimeout(timer);
+        void this.appendAgentLog(logPath, {
+          event: "close",
+          exitCode: code,
+          stdoutLength: stdout.length,
+          stderrLength: stderr.length
+        });
         if (this.stopWasRequested) {
           this.stopWasRequested = false;
           reject(Object.assign(new Error("Agent run stopped by user."), {
@@ -3122,6 +3183,49 @@ ${truncated}
         }));
       });
     });
+  }
+  async createAgentLog(prompt, command, timeoutSeconds) {
+    const folder = await this.plugin.ensureWorkspaceFolder("logs");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const vaultPath = `${folder}/agent-${stamp}.jsonl`;
+    const agyVaultPath = `${folder}/agent-${stamp}.agy.log`;
+    const agyAbsolutePath = (0, import_path.join)(this.plugin.getVaultPath(), agyVaultPath);
+    const initial = {
+      event: "start",
+      timestamp: new Date().toISOString(),
+      command,
+      timeoutSeconds,
+      permissionMode: this.plugin.settings.agentPermissionMode,
+      webSearchEnabled: this.plugin.settings.agentWebSearchEnabled,
+      syncFolders: this.plugin.settings.syncFolders,
+      promptPreview: prompt.length > 500 ? `${prompt.slice(0, 500)}...[truncated]` : prompt,
+      agyLogPath: agyVaultPath
+    };
+    await this.plugin.app.vault.create(vaultPath, `${JSON.stringify(initial)}
+`);
+    return { vaultPath, agyVaultPath, agyAbsolutePath };
+  }
+  async appendAgentLog(path, event) {
+    try {
+      const file = this.plugin.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof import_obsidian5.TFile))
+        return;
+      await this.plugin.app.vault.append(file, `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        ...event
+      })}
+`);
+    } catch (error) {
+      console.warn("Failed to append Agent log:", error);
+    }
+  }
+  redactArgsForLog(args) {
+    const redacted = [...args];
+    const printIndex = redacted.findIndex((arg) => arg === "--print" || arg === "-p" || arg === "--prompt");
+    if (printIndex >= 0 && printIndex + 1 < redacted.length) {
+      redacted[printIndex + 1] = `[prompt omitted: ${redacted[printIndex + 1].length} chars]`;
+    }
+    return redacted;
   }
   parseEnv(raw) {
     const env = {};

@@ -455,6 +455,8 @@ export class ChatView extends ItemView {
 				'---',
 				`Agent command: \`${result.command}\``,
 				`Duration: ${(result.durationMs / 1000).toFixed(1)}s`,
+				result.logPath ? `Agent log: [[${result.logPath}]]` : '',
+				result.agyLogPath ? `AGY log: [[${result.agyLogPath}]]` : '',
 				result.exitCode === 0 ? '' : `Exit code: ${result.exitCode ?? 'unknown'}`
 			].filter(Boolean).join('\n')
 		};

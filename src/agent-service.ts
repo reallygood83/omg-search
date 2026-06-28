@@ -10,6 +10,14 @@ export interface AgentRunResult {
 	command: string;
 	exitCode: number | null;
 	durationMs: number;
+	logPath?: string;
+	agyLogPath?: string;
+}
+
+interface AgentLogRef {
+	vaultPath: string;
+	agyVaultPath: string;
+	agyAbsolutePath: string;
 }
 
 export class AgentService {
@@ -31,8 +39,15 @@ export class AgentService {
 		const command = this.plugin.settings.agentCliPath.trim() || 'agy';
 		const agentPrompt = await this.buildPrompt(prompt);
 		const timeoutSeconds = Math.max(30, this.plugin.settings.agentTimeoutSeconds || 60);
-		const args = this.buildArgs(agentPrompt, timeoutSeconds);
 		const resolvedCommand = this.resolveCommand(command);
+		const logRef = await this.createAgentLog(prompt, resolvedCommand || command, timeoutSeconds);
+		const args = this.buildArgs(agentPrompt, timeoutSeconds, logRef.agyAbsolutePath);
+		await this.appendAgentLog(logRef.vaultPath, {
+			event: 'command',
+			command: resolvedCommand || command,
+			args: this.redactArgsForLog(args),
+			vaultPath: this.plugin.getVaultPath()
+		});
 
 		try {
 			if (!resolvedCommand) {
@@ -40,42 +55,65 @@ export class AgentService {
 					code: 'ENOENT'
 				});
 			}
-			const { stdout, stderr } = await this.exec(resolvedCommand, args, onChunk);
+			const { stdout, stderr } = await this.exec(resolvedCommand, args, logRef.vaultPath, onChunk);
 			const output = [stdout.trim(), stderr.trim() ? `\n\n---\nAgent stderr:\n${stderr.trim()}` : '']
 				.join('')
 				.trim();
+			await this.appendAgentLog(logRef.vaultPath, {
+				event: 'complete',
+				exitCode: 0,
+				durationMs: Date.now() - started
+			});
 			return {
 				content: output || 'Agent completed without text output.',
 				command: `${resolvedCommand} --print`,
 				exitCode: 0,
-				durationMs: Date.now() - started
+				durationMs: Date.now() - started,
+				logPath: logRef.vaultPath,
+				agyLogPath: logRef.agyVaultPath
 			};
 		} catch (error: any) {
 			if (error?.code === 'EAGENTSTOPPED') {
+				await this.appendAgentLog(logRef.vaultPath, {
+					event: 'stopped',
+					durationMs: Date.now() - started
+				});
 				return {
 					content: 'Agent run stopped by user.',
 					command: `${resolvedCommand || command} --print`,
 					exitCode: null,
-					durationMs: Date.now() - started
+					durationMs: Date.now() - started,
+					logPath: logRef.vaultPath,
+					agyLogPath: logRef.agyVaultPath
 				};
 			}
 			const stdout = String(error?.stdout || '').trim();
 			const stderr = String(error?.stderr || '').trim();
 			const message = stderr || stdout || error?.message || 'Unknown agent error';
+			await this.appendAgentLog(logRef.vaultPath, {
+				event: 'failed',
+				errorCode: error?.code ?? null,
+				message,
+				durationMs: Date.now() - started
+			});
 			new Notice('Agent run failed. Check the result card for details.');
 			return {
 				content: `Agent run failed.\n\n${message}`,
 				command: `${resolvedCommand || command} --print`,
 				exitCode: typeof error?.code === 'number' ? error.code : null,
-				durationMs: Date.now() - started
+				durationMs: Date.now() - started,
+				logPath: logRef.vaultPath,
+				agyLogPath: logRef.agyVaultPath
 			};
 		}
 	}
 
-	private buildArgs(agentPrompt: string, timeoutSeconds: number): string[] {
+	private buildArgs(agentPrompt: string, timeoutSeconds: number, agyLogPath: string): string[] {
 		const args = [
 			'--add-dir',
 			this.plugin.getVaultPath(),
+			'--log-file',
+			agyLogPath,
 			'--print-timeout',
 			`${timeoutSeconds}s`
 		];
@@ -163,6 +201,7 @@ export class AgentService {
 	private exec(
 		command: string,
 		args: string[],
+		logPath: string,
 		onChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void
 	): Promise<{ stdout: string; stderr: string }> {
 		return new Promise((resolve, reject) => {
@@ -181,11 +220,21 @@ export class AgentService {
 				windowsHide: true
 			});
 			this.activeChild = child;
+			void this.appendAgentLog(logPath, {
+				event: 'spawn',
+				pid: child.pid ?? null
+			});
 
 			const timer = window.setTimeout(() => {
 				settled = true;
 				child.kill();
 				if (this.activeChild === child) this.activeChild = null;
+				void this.appendAgentLog(logPath, {
+					event: 'timeout',
+					timeoutMs,
+					stdoutLength: stdout.length,
+					stderrLength: stderr.length
+				});
 				reject(Object.assign(new Error(`Agent timed out after ${Math.round(timeoutMs / 1000)}s`), {
 					code: 'ETIMEDOUT',
 					stdout,
@@ -197,14 +246,22 @@ export class AgentService {
 				const chunk = data.toString();
 				stdout += chunk;
 				onChunk?.(chunk, 'stdout');
-				if (stdout.length + stderr.length > maxBuffer) child.kill();
+				void this.appendAgentLog(logPath, { event: 'stdout', chunk });
+				if (stdout.length + stderr.length > maxBuffer) {
+					void this.appendAgentLog(logPath, { event: 'max_buffer', maxBuffer });
+					child.kill();
+				}
 			});
 
 			child.stderr?.on('data', (data: Buffer) => {
 				const chunk = data.toString();
 				stderr += chunk;
 				onChunk?.(chunk, 'stderr');
-				if (stdout.length + stderr.length > maxBuffer) child.kill();
+				void this.appendAgentLog(logPath, { event: 'stderr', chunk });
+				if (stdout.length + stderr.length > maxBuffer) {
+					void this.appendAgentLog(logPath, { event: 'max_buffer', maxBuffer });
+					child.kill();
+				}
 			});
 
 			child.on('error', (error) => {
@@ -212,6 +269,12 @@ export class AgentService {
 				settled = true;
 				if (this.activeChild === child) this.activeChild = null;
 				window.clearTimeout(timer);
+				void this.appendAgentLog(logPath, {
+					event: 'error',
+					message: error.message,
+					stdoutLength: stdout.length,
+					stderrLength: stderr.length
+				});
 				if (this.stopWasRequested) {
 					this.stopWasRequested = false;
 					reject(Object.assign(new Error('Agent run stopped by user.'), {
@@ -229,6 +292,12 @@ export class AgentService {
 				settled = true;
 				if (this.activeChild === child) this.activeChild = null;
 				window.clearTimeout(timer);
+				void this.appendAgentLog(logPath, {
+					event: 'close',
+					exitCode: code,
+					stdoutLength: stdout.length,
+					stderrLength: stderr.length
+				});
 				if (this.stopWasRequested) {
 					this.stopWasRequested = false;
 					reject(Object.assign(new Error('Agent run stopped by user.'), {
@@ -249,6 +318,50 @@ export class AgentService {
 				}));
 			});
 		});
+	}
+
+	private async createAgentLog(prompt: string, command: string, timeoutSeconds: number): Promise<AgentLogRef> {
+		const folder = await this.plugin.ensureWorkspaceFolder('logs');
+		const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+		const vaultPath = `${folder}/agent-${stamp}.jsonl`;
+		const agyVaultPath = `${folder}/agent-${stamp}.agy.log`;
+		const agyAbsolutePath = join(this.plugin.getVaultPath(), agyVaultPath);
+		const initial = {
+			event: 'start',
+			timestamp: new Date().toISOString(),
+			command,
+			timeoutSeconds,
+			permissionMode: this.plugin.settings.agentPermissionMode,
+			webSearchEnabled: this.plugin.settings.agentWebSearchEnabled,
+			syncFolders: this.plugin.settings.syncFolders,
+			promptPreview: prompt.length > 500 ? `${prompt.slice(0, 500)}...[truncated]` : prompt,
+			agyLogPath: agyVaultPath
+		};
+
+		await this.plugin.app.vault.create(vaultPath, `${JSON.stringify(initial)}\n`);
+		return { vaultPath, agyVaultPath, agyAbsolutePath };
+	}
+
+	private async appendAgentLog(path: string, event: Record<string, unknown>) {
+		try {
+			const file = this.plugin.app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile)) return;
+			await this.plugin.app.vault.append(file, `${JSON.stringify({
+				timestamp: new Date().toISOString(),
+				...event
+			})}\n`);
+		} catch (error) {
+			console.warn('Failed to append Agent log:', error);
+		}
+	}
+
+	private redactArgsForLog(args: string[]): string[] {
+		const redacted = [...args];
+		const printIndex = redacted.findIndex(arg => arg === '--print' || arg === '-p' || arg === '--prompt');
+		if (printIndex >= 0 && printIndex + 1 < redacted.length) {
+			redacted[printIndex + 1] = `[prompt omitted: ${redacted[printIndex + 1].length} chars]`;
+		}
+		return redacted;
 	}
 
 	private parseEnv(raw: string): Record<string, string> {
