@@ -5,6 +5,15 @@ import { SyncEngine } from './sync-engine';
 import { ChatView, CHAT_VIEW_TYPE } from './chat-view';
 import { AgentService } from './agent-service';
 
+export interface BudgetUsageEvent {
+	type: 'chat';
+	model: string;
+	inputTokens: number;
+	outputTokens: number;
+	estimatedCostUsd: number;
+	success?: boolean;
+}
+
 export default class GeminiSyncPlugin extends Plugin {
 	settings: GeminiSyncSettings;
 	geminiService: GeminiService;
@@ -93,6 +102,11 @@ export default class GeminiSyncPlugin extends Plugin {
 		this.settings.workspaceFolder = this.normalizeFolder(this.settings.workspaceFolder || DEFAULT_SETTINGS.workspaceFolder);
 		this.settings.monthlyBudgetUsd = Number.isFinite(this.settings.monthlyBudgetUsd) ? this.settings.monthlyBudgetUsd : DEFAULT_SETTINGS.monthlyBudgetUsd;
 		this.settings.estimatedMonthlySpendUsd = Number.isFinite(this.settings.estimatedMonthlySpendUsd) ? this.settings.estimatedMonthlySpendUsd : DEFAULT_SETTINGS.estimatedMonthlySpendUsd;
+		this.settings.estimatedMonthlySpendMonth = this.settings.estimatedMonthlySpendMonth || this.getCurrentBudgetMonth();
+		if (this.settings.estimatedMonthlySpendMonth !== this.getCurrentBudgetMonth()) {
+			this.settings.estimatedMonthlySpendMonth = this.getCurrentBudgetMonth();
+			this.settings.estimatedMonthlySpendUsd = 0;
+		}
 		this.settings.agentCliPath = this.settings.agentCliPath || DEFAULT_SETTINGS.agentCliPath;
 		this.settings.agentPermissionMode = this.settings.agentPermissionMode || DEFAULT_SETTINGS.agentPermissionMode;
 		this.settings.agentTimeoutSeconds = this.settings.agentTimeoutSeconds || DEFAULT_SETTINGS.agentTimeoutSeconds;
@@ -103,6 +117,63 @@ export default class GeminiSyncPlugin extends Plugin {
 		await this.saveData(this.settings);
 		// Update chat view if it's open
 		this.updateChatViewSyncStatus();
+	}
+
+	async recordBudgetUsage(event: BudgetUsageEvent) {
+		const month = this.getCurrentBudgetMonth();
+		if (this.settings.estimatedMonthlySpendMonth !== month) {
+			this.settings.estimatedMonthlySpendMonth = month;
+			this.settings.estimatedMonthlySpendUsd = 0;
+		}
+
+		this.settings.estimatedMonthlySpendUsd = Number((
+			(this.settings.estimatedMonthlySpendUsd || 0) + event.estimatedCostUsd
+		).toFixed(6));
+		await this.saveSettings();
+
+		const logEntry = {
+			timestamp: new Date().toISOString(),
+			month,
+			...event,
+			monthlyBudgetUsd: this.settings.monthlyBudgetUsd,
+			estimatedMonthlySpendUsd: this.settings.estimatedMonthlySpendUsd
+		};
+
+		try {
+			const folder = await this.ensureWorkspaceFolder('logs');
+			const filePath = `${folder}/budget-${month}.jsonl`;
+			const line = `${JSON.stringify(logEntry)}\n`;
+			const existing = this.app.vault.getAbstractFileByPath(filePath);
+			if (existing instanceof TFile) {
+				await this.app.vault.append(existing, line);
+			} else {
+				await this.app.vault.create(filePath, line);
+			}
+		} catch (error) {
+			console.warn('Failed to write budget usage log:', error);
+		}
+	}
+
+	estimateGeminiCost(model: string, inputTokens: number, outputTokens: number): number {
+		const rates = this.getEstimatedGeminiRates(model);
+		return Number((
+			(inputTokens / 1_000_000) * rates.inputUsdPerMillion +
+			(outputTokens / 1_000_000) * rates.outputUsdPerMillion
+		).toFixed(6));
+	}
+
+	estimateTokens(text: string): number {
+		return Math.max(1, Math.ceil(text.length / 4));
+	}
+
+	getCurrentBudgetMonth(): string {
+		return new Date().toISOString().slice(0, 7);
+	}
+
+	private getEstimatedGeminiRates(model: string): { inputUsdPerMillion: number; outputUsdPerMillion: number } {
+		if (model.includes('lite')) return { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.4 };
+		if (model.includes('pro')) return { inputUsdPerMillion: 1.25, outputUsdPerMillion: 10 };
+		return { inputUsdPerMillion: 0.3, outputUsdPerMillion: 2.5 };
 	}
 
 	// Update sync status in chat view if it's open

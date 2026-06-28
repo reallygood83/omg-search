@@ -38,6 +38,7 @@ var DEFAULT_SETTINGS = {
   workspaceFolder: "_omg",
   monthlyBudgetUsd: 7,
   estimatedMonthlySpendUsd: 0,
+  estimatedMonthlySpendMonth: "",
   agentCliPath: "agy",
   agentPermissionMode: "review",
   agentTimeoutSeconds: 180,
@@ -1728,6 +1729,20 @@ Instructions:
       const result = await chat.sendMessage(userMessage);
       const response = await result.response;
       const text = response.text();
+      const usage = response.usageMetadata || {};
+      const outputTokens = Number(usage.candidatesTokenCount || this.plugin.estimateTokens(text));
+      const inputTokens = Number(
+        usage.promptTokenCount || Math.max(1, this.plugin.estimateTokens(`${systemPrompt}
+${userMessage}`))
+      );
+      await this.plugin.recordBudgetUsage({
+        type: "chat",
+        model: this.plugin.settings.model,
+        inputTokens,
+        outputTokens,
+        estimatedCostUsd: this.plugin.estimateGeminiCost(this.plugin.settings.model, inputTokens, outputTokens),
+        success: true
+      });
       this.chatHistory.push({
         role: "model",
         parts: [{ text }]
@@ -2238,12 +2253,14 @@ var ChatView = class extends import_obsidian4.ItemView {
     panel.createEl("h3", { text: "Budget Guard" });
     const budget = this.plugin.settings.monthlyBudgetUsd;
     const used = this.plugin.settings.estimatedMonthlySpendUsd;
+    const month = this.plugin.settings.estimatedMonthlySpendMonth || this.plugin.getCurrentBudgetMonth();
     const pct = budget > 0 ? Math.min(100, Math.round(used / budget * 100)) : 0;
-    panel.createEl("p", { text: `Estimated month-to-date usage: $${used.toFixed(2)} / $${budget.toFixed(2)} (${pct}%)` });
+    panel.createEl("p", { text: `Estimated ${month} usage: $${used.toFixed(4)} / $${budget.toFixed(2)} (${pct}%)` });
     const meter = panel.createDiv({ cls: "mok-budget-meter" });
     meter.createDiv({ cls: "mok-budget-fill" }).style.width = `${pct}%`;
+    panel.createEl("p", { text: `Gemini API log: ${this.plugin.settings.workspaceFolder}/logs/budget-${month}.jsonl` });
+    panel.createEl("p", { text: "Cost is an estimate from Gemini token metadata when available. Agent/Antigravity CLI runs are not counted because they do not use this plugin API key." });
     panel.createEl("p", { text: "Default policy: Flash-Lite for classification, Flash for answers, Pro only after manual approval." });
-    panel.createEl("p", { text: "Next iteration: connect live token accounting per File Search retrieval and Agent run." });
   }
   renderWorkspaceTab() {
     const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel" });
@@ -2657,6 +2674,7 @@ var import_obsidian5 = require("obsidian");
 var import_child_process = require("child_process");
 var import_fs = require("fs");
 var import_os = require("os");
+var import_path = require("path");
 var AgentService = class {
   constructor(plugin) {
     this.plugin = plugin;
@@ -2664,7 +2682,8 @@ var AgentService = class {
   async run(prompt) {
     const started = Date.now();
     const command = this.plugin.settings.agentCliPath.trim() || "agy";
-    const args = ["--print", this.buildPrompt(prompt)];
+    const agentPrompt = this.buildPrompt(prompt);
+    const args = ["--print", agentPrompt];
     const resolvedCommand = this.resolveCommand(command);
     try {
       if (!resolvedCommand) {
@@ -2728,6 +2747,7 @@ ${message}`,
             ...process.env,
             ...this.parseEnv(this.plugin.settings.agentEnvironment)
           },
+          shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(command),
           timeout: Math.max(3e4, this.plugin.settings.agentTimeoutSeconds * 1e3),
           maxBuffer: 1024 * 1024 * 8
         },
@@ -2755,29 +2775,33 @@ ${message}`,
     return env;
   }
   resolveCommand(command) {
-    if (command.includes("/"))
+    if ((0, import_path.isAbsolute)(command) || command.includes("/") || command.includes("\\")) {
       return (0, import_fs.existsSync)(command) ? command : null;
+    }
     const paths = [
-      ...(process.env.PATH || "").split(":"),
-      `${(0, import_os.homedir)()}/.local/bin`,
-      `${(0, import_os.homedir)()}/.antigravity/antigravity/bin`,
-      `${(0, import_os.homedir)()}/.antigravity-ide/antigravity-ide/bin`,
+      ...(process.env.PATH || "").split(import_path.delimiter),
+      (0, import_path.join)((0, import_os.homedir)(), ".local", "bin"),
+      (0, import_path.join)((0, import_os.homedir)(), ".antigravity", "antigravity", "bin"),
+      (0, import_path.join)((0, import_os.homedir)(), ".antigravity-ide", "antigravity-ide", "bin"),
       "/opt/homebrew/bin",
       "/usr/local/bin",
       "/usr/bin",
       "/bin"
     ].filter(Boolean);
+    const extensions = process.platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""];
     for (const dir of paths) {
-      const candidate = `${dir}/${command}`;
-      if ((0, import_fs.existsSync)(candidate))
-        return candidate;
+      for (const ext of extensions) {
+        const candidate = (0, import_path.join)(dir, `${command}${ext}`);
+        if ((0, import_fs.existsSync)(candidate))
+          return candidate;
+      }
     }
     return null;
   }
   getMissingCommandMessage(command) {
     return [
       `Could not find the Agent CLI command "${command}".`,
-      "If Obsidian was opened from Finder or Dock, it may not inherit your shell PATH.",
+      "If Obsidian was opened from Finder, Dock, or Start Menu, it may not inherit your shell PATH.",
       "Open Settings > Master of Knowledge > Agent Workspace and set Antigravity CLI Path to the full command path.",
       `On this Mac it is often: ${(0, import_os.homedir)()}/.local/bin/agy`
     ].join("\n");
@@ -2841,6 +2865,11 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
     this.settings.workspaceFolder = this.normalizeFolder(this.settings.workspaceFolder || DEFAULT_SETTINGS.workspaceFolder);
     this.settings.monthlyBudgetUsd = Number.isFinite(this.settings.monthlyBudgetUsd) ? this.settings.monthlyBudgetUsd : DEFAULT_SETTINGS.monthlyBudgetUsd;
     this.settings.estimatedMonthlySpendUsd = Number.isFinite(this.settings.estimatedMonthlySpendUsd) ? this.settings.estimatedMonthlySpendUsd : DEFAULT_SETTINGS.estimatedMonthlySpendUsd;
+    this.settings.estimatedMonthlySpendMonth = this.settings.estimatedMonthlySpendMonth || this.getCurrentBudgetMonth();
+    if (this.settings.estimatedMonthlySpendMonth !== this.getCurrentBudgetMonth()) {
+      this.settings.estimatedMonthlySpendMonth = this.getCurrentBudgetMonth();
+      this.settings.estimatedMonthlySpendUsd = 0;
+    }
     this.settings.agentCliPath = this.settings.agentCliPath || DEFAULT_SETTINGS.agentCliPath;
     this.settings.agentPermissionMode = this.settings.agentPermissionMode || DEFAULT_SETTINGS.agentPermissionMode;
     this.settings.agentTimeoutSeconds = this.settings.agentTimeoutSeconds || DEFAULT_SETTINGS.agentTimeoutSeconds;
@@ -2849,6 +2878,53 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
   async saveSettings() {
     await this.saveData(this.settings);
     this.updateChatViewSyncStatus();
+  }
+  async recordBudgetUsage(event) {
+    const month = this.getCurrentBudgetMonth();
+    if (this.settings.estimatedMonthlySpendMonth !== month) {
+      this.settings.estimatedMonthlySpendMonth = month;
+      this.settings.estimatedMonthlySpendUsd = 0;
+    }
+    this.settings.estimatedMonthlySpendUsd = Number(((this.settings.estimatedMonthlySpendUsd || 0) + event.estimatedCostUsd).toFixed(6));
+    await this.saveSettings();
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      month,
+      ...event,
+      monthlyBudgetUsd: this.settings.monthlyBudgetUsd,
+      estimatedMonthlySpendUsd: this.settings.estimatedMonthlySpendUsd
+    };
+    try {
+      const folder = await this.ensureWorkspaceFolder("logs");
+      const filePath = `${folder}/budget-${month}.jsonl`;
+      const line = `${JSON.stringify(logEntry)}
+`;
+      const existing = this.app.vault.getAbstractFileByPath(filePath);
+      if (existing instanceof import_obsidian6.TFile) {
+        await this.app.vault.append(existing, line);
+      } else {
+        await this.app.vault.create(filePath, line);
+      }
+    } catch (error) {
+      console.warn("Failed to write budget usage log:", error);
+    }
+  }
+  estimateGeminiCost(model, inputTokens, outputTokens) {
+    const rates = this.getEstimatedGeminiRates(model);
+    return Number((inputTokens / 1e6 * rates.inputUsdPerMillion + outputTokens / 1e6 * rates.outputUsdPerMillion).toFixed(6));
+  }
+  estimateTokens(text) {
+    return Math.max(1, Math.ceil(text.length / 4));
+  }
+  getCurrentBudgetMonth() {
+    return new Date().toISOString().slice(0, 7);
+  }
+  getEstimatedGeminiRates(model) {
+    if (model.includes("lite"))
+      return { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.4 };
+    if (model.includes("pro"))
+      return { inputUsdPerMillion: 1.25, outputUsdPerMillion: 10 };
+    return { inputUsdPerMillion: 0.3, outputUsdPerMillion: 2.5 };
   }
   // Update sync status in chat view if it's open
   updateChatViewSyncStatus() {

@@ -552,6 +552,20 @@ Instructions:
 			const result = await chat.sendMessage(userMessage);
 			const response = await result.response;
 			const text = response.text();
+			const usage = (response as any).usageMetadata || {};
+			const outputTokens = Number(usage.candidatesTokenCount || this.plugin.estimateTokens(text));
+			const inputTokens = Number(
+				usage.promptTokenCount ||
+				Math.max(1, this.plugin.estimateTokens(`${systemPrompt}\n${userMessage}`))
+			);
+			await this.plugin.recordBudgetUsage({
+				type: 'chat',
+				model: this.plugin.settings.model,
+				inputTokens,
+				outputTokens,
+				estimatedCostUsd: this.plugin.estimateGeminiCost(this.plugin.settings.model, inputTokens, outputTokens),
+				success: true
+			});
 
 			// Add assistant response to history
 			this.chatHistory.push({

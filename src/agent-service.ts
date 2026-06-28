@@ -2,6 +2,7 @@ import { Notice } from 'obsidian';
 import { execFile } from 'child_process';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
+import { delimiter, isAbsolute, join } from 'path';
 import GeminiSyncPlugin from './main';
 
 export interface AgentRunResult {
@@ -17,7 +18,8 @@ export class AgentService {
 	async run(prompt: string): Promise<AgentRunResult> {
 		const started = Date.now();
 		const command = this.plugin.settings.agentCliPath.trim() || 'agy';
-		const args = ['--print', this.buildPrompt(prompt)];
+		const agentPrompt = this.buildPrompt(prompt);
+		const args = ['--print', agentPrompt];
 		const resolvedCommand = this.resolveCommand(command);
 
 		try {
@@ -81,6 +83,7 @@ export class AgentService {
 						...process.env,
 						...this.parseEnv(this.plugin.settings.agentEnvironment)
 					},
+					shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(command),
 					timeout: Math.max(30_000, this.plugin.settings.agentTimeoutSeconds * 1000),
 					maxBuffer: 1024 * 1024 * 8
 				},
@@ -108,22 +111,27 @@ export class AgentService {
 	}
 
 	private resolveCommand(command: string): string | null {
-		if (command.includes('/')) return existsSync(command) ? command : null;
+		if (isAbsolute(command) || command.includes('/') || command.includes('\\')) {
+			return existsSync(command) ? command : null;
+		}
 
 		const paths = [
-			...(process.env.PATH || '').split(':'),
-			`${homedir()}/.local/bin`,
-			`${homedir()}/.antigravity/antigravity/bin`,
-			`${homedir()}/.antigravity-ide/antigravity-ide/bin`,
+			...(process.env.PATH || '').split(delimiter),
+			join(homedir(), '.local', 'bin'),
+			join(homedir(), '.antigravity', 'antigravity', 'bin'),
+			join(homedir(), '.antigravity-ide', 'antigravity-ide', 'bin'),
 			'/opt/homebrew/bin',
 			'/usr/local/bin',
 			'/usr/bin',
 			'/bin'
 		].filter(Boolean);
+		const extensions = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : [''];
 
 		for (const dir of paths) {
-			const candidate = `${dir}/${command}`;
-			if (existsSync(candidate)) return candidate;
+			for (const ext of extensions) {
+				const candidate = join(dir, `${command}${ext}`);
+				if (existsSync(candidate)) return candidate;
+			}
 		}
 		return null;
 	}
@@ -131,7 +139,7 @@ export class AgentService {
 	private getMissingCommandMessage(command: string): string {
 		return [
 			`Could not find the Agent CLI command "${command}".`,
-			'If Obsidian was opened from Finder or Dock, it may not inherit your shell PATH.',
+			'If Obsidian was opened from Finder, Dock, or Start Menu, it may not inherit your shell PATH.',
 			'Open Settings > Master of Knowledge > Agent Workspace and set Antigravity CLI Path to the full command path.',
 			`On this Mac it is often: ${homedir()}/.local/bin/agy`
 		].join('\n');

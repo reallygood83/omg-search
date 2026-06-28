@@ -217,12 +217,14 @@ export class ChatView extends ItemView {
 		panel.createEl('h3', { text: 'Budget Guard' });
 		const budget = this.plugin.settings.monthlyBudgetUsd;
 		const used = this.plugin.settings.estimatedMonthlySpendUsd;
+		const month = this.plugin.settings.estimatedMonthlySpendMonth || this.plugin.getCurrentBudgetMonth();
 		const pct = budget > 0 ? Math.min(100, Math.round((used / budget) * 100)) : 0;
-		panel.createEl('p', { text: `Estimated month-to-date usage: $${used.toFixed(2)} / $${budget.toFixed(2)} (${pct}%)` });
+		panel.createEl('p', { text: `Estimated ${month} usage: $${used.toFixed(4)} / $${budget.toFixed(2)} (${pct}%)` });
 		const meter = panel.createDiv({ cls: 'mok-budget-meter' });
 		meter.createDiv({ cls: 'mok-budget-fill' }).style.width = `${pct}%`;
+		panel.createEl('p', { text: `Gemini API log: ${this.plugin.settings.workspaceFolder}/logs/budget-${month}.jsonl` });
+		panel.createEl('p', { text: 'Cost is an estimate from Gemini token metadata when available. Agent/Antigravity CLI runs are not counted because they do not use this plugin API key.' });
 		panel.createEl('p', { text: 'Default policy: Flash-Lite for classification, Flash for answers, Pro only after manual approval.' });
-		panel.createEl('p', { text: 'Next iteration: connect live token accounting per File Search retrieval and Agent run.' });
 	}
 
 	private renderWorkspaceTab() {

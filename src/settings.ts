@@ -16,6 +16,7 @@ export interface GeminiSyncSettings {
 	workspaceFolder: string;
 	monthlyBudgetUsd: number;
 	estimatedMonthlySpendUsd: number;
+	estimatedMonthlySpendMonth: string;
 	agentCliPath: string;
 	agentPermissionMode: 'review' | 'auto' | 'yolo';
 	agentTimeoutSeconds: number;
@@ -36,6 +37,7 @@ export const DEFAULT_SETTINGS: GeminiSyncSettings = {
 	workspaceFolder: '_omg',
 	monthlyBudgetUsd: 7,
 	estimatedMonthlySpendUsd: 0,
+	estimatedMonthlySpendMonth: '',
 	agentCliPath: 'agy',
 	agentPermissionMode: 'review',
 	agentTimeoutSeconds: 180,
