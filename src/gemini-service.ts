@@ -559,7 +559,9 @@ Instructions:
 4. Answer in the same language as the user's latest message.
 5. If the user's latest message is Korean, answer naturally in Korean even when source notes contain English terms or titles.
 6. Preserve technical terms, product names, note titles, and quoted source phrases in their original language when needed.
-7. Be concise and helpful.`;
+7. Never expose raw File Search IDs, opaque document IDs, random-looking source IDs, or internal URIs.
+8. Produce a complete, practical artifact rather than a thin outline. For lesson plans, include audience, goals, time plan, activity flow, teacher script, hands-on tasks, materials, and follow-up prompts.
+9. Be specific and useful. Avoid generic summaries when the user asks for a deliverable.`;
 
 			// Add to chat history
 			this.chatHistory.push({
@@ -600,18 +602,22 @@ Instructions:
 				success: true
 			});
 
+			const cleanedText = this.cleanGeneratedSourceNoise(text);
+			const citations = await this.recoverSyncedCitations(
+				userMessage,
+				text,
+				this.extractCitations(text)
+			);
+
 			// Add assistant response to history
 			this.chatHistory.push({
 				role: 'model',
-				parts: [{ text }]
+				parts: [{ text: cleanedText }]
 			});
-
-			// Extract citations from response
-			const citations = this.extractCitations(text);
 
 			return {
 				role: 'model',
-				content: text,
+				content: cleanedText,
 				citations
 			};
 		} catch (error) {
@@ -627,16 +633,7 @@ Instructions:
 		const corpusName = this.plugin.settings.corpusName || await this.getOrCreateCorpus();
 		if (!corpusName) return null;
 
-		const input = [
-			'You are a helpful assistant that answers questions from the user\'s synced Obsidian notes.',
-			'Use the File Search tool as the primary source of truth.',
-			'Answer in the same language as the user\'s latest message. If the user writes Korean, answer naturally in Korean.',
-			'When the File Search result does not support the answer, say that clearly instead of guessing.',
-			'Preserve note titles, product names, and technical terms in their original language when useful.',
-			'',
-			'User request:',
-			userMessage
-		].join('\n');
+		const input = this.buildFileSearchPrompt(userMessage);
 
 		try {
 			const response = await this.apiRequest(
@@ -659,9 +656,15 @@ Instructions:
 
 			const { text, citations } = this.extractInteractionOutput(response.data);
 			if (!text.trim()) return null;
+			const recoveredCitations = await this.recoverSyncedCitations(
+				userMessage,
+				text,
+				citations
+			);
+			const cleanedText = this.cleanGeneratedSourceNoise(text);
 
 			const usage = response.data?.usageMetadata || response.data?.usage_metadata || {};
-			const outputTokens = Number(usage.candidatesTokenCount || usage.outputTokenCount || this.plugin.estimateTokens(text));
+			const outputTokens = Number(usage.candidatesTokenCount || usage.outputTokenCount || this.plugin.estimateTokens(cleanedText));
 			const inputTokens = Number(usage.promptTokenCount || usage.inputTokenCount || this.plugin.estimateTokens(input));
 			await this.plugin.recordBudgetUsage({
 				type: 'chat',
@@ -678,18 +681,35 @@ Instructions:
 			});
 			this.chatHistory.push({
 				role: 'model',
-				parts: [{ text }]
+				parts: [{ text: cleanedText }]
 			});
 
 			return {
 				role: 'model',
-				content: text,
-				citations
+				content: cleanedText,
+				citations: recoveredCitations
 			};
 		} catch (error) {
 			console.warn('File Search interaction error, falling back to local context:', error);
 			return null;
 		}
+	}
+
+	private buildFileSearchPrompt(userMessage: string): string {
+		return [
+			'You are Master of Knowledge, an Obsidian knowledge assistant.',
+			'Use the File Search tool as the primary source of truth for the user\'s synced Obsidian notes.',
+			'Answer in the same language as the user\'s latest message. If the user writes Korean, answer naturally in Korean.',
+			'Never expose raw File Search IDs, opaque document IDs, random-looking source IDs, or internal URIs.',
+			'Do not add a manual "Source notes" section with opaque IDs. The app will render source note buttons separately.',
+			'When citing inside the prose, cite only real note titles or real vault paths. If the real title/path is not available, omit the citation from the prose.',
+			'When the File Search result does not support the answer, say that clearly instead of guessing.',
+			'Produce a complete, practical artifact rather than a thin outline. For lesson plans, include audience, goals, time plan, activity flow, teacher script, hands-on tasks, materials, and follow-up prompts.',
+			'Ground recommendations in the retrieved notes, then add clearly labeled general suggestions only when useful.',
+			'',
+			'User request:',
+			userMessage
+		].join('\n');
 	}
 
 	private extractInteractionOutput(data: any): { text: string; citations: Citation[] } {
@@ -752,13 +772,175 @@ Instructions:
 	}
 
 	private resolveSyncedCitationUri(uri: string): string | null {
+		const normalizedUri = this.normalizeCitationPath(uri);
+		const uriTail = normalizedUri.split('/').pop() || normalizedUri;
 		for (const path in this.plugin.settings.files) {
 			const syncData = this.plugin.settings.files[path];
 			if (syncData.status !== 'synced') continue;
 			if (!this.plugin.isInSyncFolder(path)) continue;
-			if (syncData.uri === uri || uri.includes(syncData.uri)) return path;
+			const normalizedSyncUri = this.normalizeCitationPath(syncData.uri || '');
+			if (!normalizedSyncUri) continue;
+			const syncUriTail = normalizedSyncUri.split('/').pop() || normalizedSyncUri;
+			if (syncData.uri === uri ||
+				uri.includes(syncData.uri) ||
+				normalizedUri.includes(normalizedSyncUri) ||
+				(!!uriTail && uriTail === syncUriTail) ||
+				(!!syncUriTail && normalizedUri.includes(syncUriTail))) {
+				return path;
+			}
 		}
 		return null;
+	}
+
+	private cleanGeneratedSourceNoise(text: string): string {
+		const lines = text.split('\n');
+		const cleaned: string[] = [];
+		let skippingGeneratedSources = false;
+
+		for (const line of lines) {
+			const trimmed = line.trim();
+			const startsGeneratedSourceBlock =
+				/^#{1,4}\s*(활용한\s*)?(source|sources|출처|참고\s*노트|source\s*노트|source\s*notes?|노트\s*정보)/i.test(trimmed) ||
+				/^[-*]\s*`?[a-z0-9]{8,}`?\s*(\/|:|,)/i.test(trimmed);
+
+			if (startsGeneratedSourceBlock) {
+				skippingGeneratedSources = true;
+				continue;
+			}
+
+			if (skippingGeneratedSources) {
+				if (/^#{1,3}\s+\S/.test(trimmed) || /^---+$/.test(trimmed)) {
+					skippingGeneratedSources = false;
+				} else if (!trimmed || /^[-*]\s*`?[a-z0-9]{8,}`?/i.test(trimmed)) {
+					continue;
+				} else if (/`?[a-z0-9]{8,}`?\s*(\/|,)/i.test(trimmed) && !trimmed.includes('.md')) {
+					continue;
+				} else {
+					skippingGeneratedSources = false;
+				}
+			}
+
+			cleaned.push(line);
+		}
+
+		return cleaned
+			.join('\n')
+			.replace(/\n{3,}/g, '\n\n')
+			.trim();
+	}
+
+	private async recoverSyncedCitations(
+		userMessage: string,
+		text: string,
+		parsedCitations: Citation[]
+	): Promise<Citation[]> {
+		const citations = [...parsedCitations];
+		const explicit = this.extractCitations(text);
+		for (const citation of explicit) {
+			if (!citations.find(existing => existing.sourcePath === citation.sourcePath)) {
+				citations.push(citation);
+			}
+		}
+
+		const opaqueIds = this.extractOpaqueSourceIds(text);
+		for (const id of opaqueIds) {
+			const byUri = this.resolveSyncedCitationUri(id);
+			const byPath = this.resolveSyncedCitationPath(id);
+			const sourcePath = byUri || byPath;
+			if (sourcePath && !citations.find(existing => existing.sourcePath === sourcePath)) {
+				citations.push({ sourceId: sourcePath, sourcePath, content: '' });
+			}
+		}
+
+		const scored = await this.rankSyncedNotes(`${userMessage}\n${text}`, 5);
+		for (const sourcePath of scored) {
+			if (!citations.find(existing => existing.sourcePath === sourcePath)) {
+				citations.push({ sourceId: sourcePath, sourcePath, content: '' });
+			}
+			if (citations.length >= 5) break;
+		}
+
+		return citations;
+	}
+
+	private extractOpaqueSourceIds(text: string): string[] {
+		const ids = new Set<string>();
+		const patterns = [
+			/`([a-z0-9]{8,})`/gi,
+			/\b([a-z0-9]{10,})\b/gi
+		];
+
+		for (const pattern of patterns) {
+			let match: RegExpExecArray | null;
+			while ((match = pattern.exec(text)) !== null) {
+				const value = match[1];
+				if (value && !/^\d+$/.test(value)) ids.add(value);
+			}
+		}
+
+		return Array.from(ids);
+	}
+
+	private async rankSyncedNotes(query: string, limit: number): Promise<string[]> {
+		const tokens = this.tokenizeForSearch(query);
+		if (tokens.length === 0) return [];
+
+		const scored: { path: string; score: number }[] = [];
+		for (const path in this.plugin.settings.files) {
+			const syncData = this.plugin.settings.files[path];
+			if (syncData.status !== 'synced') continue;
+			if (!this.plugin.isInSyncFolder(path)) continue;
+
+			const file = this.plugin.app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile) || file.extension !== 'md') continue;
+
+			try {
+				const content = await this.plugin.app.vault.read(file);
+				const haystack = `${file.basename}\n${file.path}\n${content.slice(0, 5000)}`.toLowerCase();
+				let score = 0;
+				for (const token of tokens) {
+					if (file.basename.toLowerCase().includes(token)) score += 8;
+					if (file.path.toLowerCase().includes(token)) score += 5;
+					const matches = haystack.split(token).length - 1;
+					score += Math.min(matches, 6);
+				}
+				if (score > 0) scored.push({ path: file.path, score });
+			} catch (error) {
+				console.warn(`Failed to rank synced note: ${path}`, error);
+			}
+		}
+
+		return scored
+			.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+			.slice(0, limit)
+			.map(item => item.path);
+	}
+
+	private tokenizeForSearch(text: string): string[] {
+		const tokens = new Set<string>();
+		const normalized = text
+			.toLowerCase()
+			.replace(/[^\p{L}\p{N}\s]/gu, ' ');
+
+		for (const raw of normalized.split(/\s+/)) {
+			const token = raw.trim();
+			if (token.length < 2) continue;
+			if (/^\d+$/.test(token)) continue;
+			if (this.isStopToken(token)) continue;
+			tokens.add(token);
+			if (tokens.size >= 32) break;
+		}
+
+		return Array.from(tokens);
+	}
+
+	private isStopToken(token: string): boolean {
+		return new Set([
+			'the', 'and', 'for', 'with', 'from', 'that', 'this', 'you', 'your',
+			'are', 'was', 'were', 'have', 'has', 'not', 'can', 'will',
+			'대한', '관련', '작성', '내용', '노트', '활용', '사용자', '초안',
+			'있습니다', '합니다', '위한', '에게', '에서', '으로', '그리고'
+		]).has(token);
 	}
 
 	private async sendMessageWithRetry(chat: any, userMessage: string) {
