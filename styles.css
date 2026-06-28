@@ -431,6 +431,94 @@
 	margin-top: 8px;
 }
 
+/* ==================== Settings Folder Picker ==================== */
+.mok-folder-picker {
+	padding: 12px;
+	margin: 8px 0 18px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+}
+
+.mok-folder-picker-controls {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto auto;
+	gap: 8px;
+	align-items: center;
+}
+
+.mok-folder-select {
+	width: 100%;
+	min-width: 0;
+}
+
+.mok-folder-add-button,
+.mok-folder-clear-button {
+	white-space: nowrap;
+}
+
+.mok-folder-picker-summary {
+	margin-top: 10px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.mok-folder-chip-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.mok-folder-chip {
+	display: inline-flex;
+	align-items: center;
+	max-width: 100%;
+	gap: 6px;
+	padding: 4px 6px 4px 10px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+}
+
+.mok-folder-chip-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.mok-folder-chip-remove {
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--text-muted);
+	font-size: 16px;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.mok-folder-chip-remove:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+@media (max-width: 600px) {
+	.mok-folder-picker-controls {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.mok-folder-add-button,
+	.mok-folder-clear-button {
+		width: 100%;
+	}
+}
+
 /* ==================== Help Section ==================== */
 .gemini-sync-help {
 	padding: 16px;

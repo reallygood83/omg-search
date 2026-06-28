@@ -102,23 +102,8 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
     });
     containerEl.createEl("h2", { text: "Sync Configuration" });
     const folders = this.getAllFolders();
-    const selectedFolders = new Set(this.plugin.settings.syncFolders);
     new import_obsidian.Setting(containerEl).setName("Sync Folders").setDesc("Select one or more folders to sync with Gemini. Markdown files in selected folders, including subfolders, will be synced.");
-    for (const folder of folders) {
-      new import_obsidian.Setting(containerEl).setName(folder).addToggle(
-        (toggle) => toggle.setValue(selectedFolders.has(folder)).onChange(async (value) => {
-          const next = new Set(this.plugin.settings.syncFolders);
-          if (value) {
-            next.add(folder);
-          } else {
-            next.delete(folder);
-          }
-          this.plugin.settings.syncFolders = Array.from(next).sort();
-          await this.plugin.saveSettings();
-          this.display();
-        })
-      );
-    }
+    this.renderSyncFolderPicker(containerEl, folders);
     new import_obsidian.Setting(containerEl).setName("Corpus Display Name").setDesc("A friendly name for your knowledge base in Gemini.").addText(
       (text) => text.setPlaceholder("My Obsidian Vault").setValue(this.plugin.settings.corpusDisplayName).onChange(async (value) => {
         this.plugin.settings.corpusDisplayName = value;
@@ -255,6 +240,70 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
     collectFolders(rootFolder);
     folders.sort();
     return folders;
+  }
+  renderSyncFolderPicker(containerEl, folders) {
+    const pickerEl = containerEl.createDiv({ cls: "mok-folder-picker" });
+    const selectedFolders = this.plugin.settings.syncFolders;
+    const selectedSet = new Set(selectedFolders);
+    const availableFolders = folders.filter((folder) => !selectedSet.has(folder));
+    const controlsEl = pickerEl.createDiv({ cls: "mok-folder-picker-controls" });
+    const selectEl = controlsEl.createEl("select", { cls: "dropdown mok-folder-select" });
+    selectEl.createEl("option", {
+      text: availableFolders.length > 0 ? "Choose a folder to add..." : "No more folders available",
+      value: ""
+    });
+    for (const folder of availableFolders) {
+      selectEl.createEl("option", { text: folder, value: folder });
+    }
+    const addButton = controlsEl.createEl("button", {
+      cls: "mod-cta mok-folder-add-button",
+      text: "Add"
+    });
+    addButton.disabled = availableFolders.length === 0;
+    addButton.addEventListener("click", async () => {
+      const folder = selectEl.value;
+      if (!folder) {
+        new import_obsidian.Notice("Choose a folder first.");
+        return;
+      }
+      await this.updateSyncFolders([...selectedFolders, folder]);
+    });
+    if (selectedFolders.length > 0) {
+      const clearButton = controlsEl.createEl("button", {
+        cls: "mok-folder-clear-button",
+        text: "Clear"
+      });
+      clearButton.addEventListener("click", async () => {
+        await this.updateSyncFolders([]);
+      });
+    }
+    const summaryEl = pickerEl.createDiv({
+      cls: "mok-folder-picker-summary",
+      text: selectedFolders.length === 0 ? "No folders selected." : `${selectedFolders.length} folder${selectedFolders.length === 1 ? "" : "s"} selected.`
+    });
+    const chipsEl = pickerEl.createDiv({ cls: "mok-folder-chip-list" });
+    for (const folder of selectedFolders) {
+      const chipEl = chipsEl.createDiv({ cls: "mok-folder-chip" });
+      chipEl.createSpan({ cls: "mok-folder-chip-label", text: folder });
+      const removeButton = chipEl.createEl("button", {
+        cls: "mok-folder-chip-remove",
+        text: "x",
+        attr: { "aria-label": `Remove ${folder}` }
+      });
+      removeButton.addEventListener("click", async () => {
+        await this.updateSyncFolders(selectedFolders.filter((item) => item !== folder));
+      });
+    }
+    if (folders.length === 0) {
+      summaryEl.setText("No folders found in this vault.");
+    }
+  }
+  async updateSyncFolders(folders) {
+    this.plugin.settings.syncFolders = Array.from(new Set(
+      folders.map((folder) => folder.trim()).filter(Boolean)
+    )).sort();
+    await this.plugin.saveSettings();
+    this.display();
   }
   renderDashboard(container) {
     const files = this.plugin.settings.files;

@@ -1,6 +1,6 @@
 {
 	"name": "master-of-knowledge",
-	"version": "2.0.0",
+	"version": "2.0.1",
 	"description": "Obsidian knowledge workspace powered by Gemini File Search and local agents",
 	"main": "main.js",
 	"scripts": {
