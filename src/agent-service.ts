@@ -1,4 +1,4 @@
-import { Notice } from 'obsidian';
+import { Notice, TFile } from 'obsidian';
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
@@ -95,6 +95,7 @@ export class AgentService {
 		const trustMode = this.plugin.settings.agentPermissionMode;
 		const scope = this.plugin.settings.syncFolders.join(', ') || 'No sync folders selected';
 		const webSearch = this.plugin.settings.agentWebSearchEnabled;
+		const syncedNotesContext = await this.buildSyncedNotesContext();
 		let activeNoteContent = '';
 		if (activeFile) {
 			try {
@@ -116,14 +117,47 @@ export class AgentService {
 			`Selected knowledge folders: ${scope}.`,
 			activeFile ? `Active note path: ${activeFile.path}.` : 'No active note is open.',
 			activeNoteContent ? `Active note content excerpt:\n${activeNoteContent}` : '',
+			'Synced notes context. Use this as the primary knowledge base and cite note paths when you use them:',
+			syncedNotesContext,
 			webSearch
 				? 'Use web search when current external information would improve the answer, and return markdown with clear web and vault sources.'
 				: 'Do not use web search unless the user explicitly asks for it in the prompt. Prefer vault evidence.',
+			'Answer primarily from the synced notes context. If the answer is not supported by synced notes, say so clearly.',
 			'Do not modify user notes directly unless the prompt explicitly asks for it. Prefer a preview-ready result.',
 			'',
 			'User request:',
 			prompt
 		].join('\n');
+	}
+
+	private async buildSyncedNotesContext(): Promise<string> {
+		const contexts: string[] = [];
+		let totalLength = 0;
+		const maxTotalLength = 24000;
+
+		for (const path in this.plugin.settings.files) {
+			const syncData = this.plugin.settings.files[path];
+			if (syncData.status !== 'synced') continue;
+			if (!this.plugin.isInSyncFolder(path)) continue;
+
+			const file = this.plugin.app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile) || file.extension !== 'md') continue;
+
+			try {
+				const content = await this.plugin.app.vault.read(file);
+				const truncated = content.length > 1800
+					? `${content.slice(0, 1800)}...[truncated]`
+					: content;
+				const block = `--- ${file.path} ---\n${truncated}\n`;
+				if (totalLength + block.length > maxTotalLength) break;
+				contexts.push(block);
+				totalLength += block.length;
+			} catch (error) {
+				console.warn(`Failed to read synced note for Agent context: ${path}`, error);
+			}
+		}
+
+		return contexts.join('\n') || 'No synced notes are available in the selected sync folders.';
 	}
 
 	private exec(

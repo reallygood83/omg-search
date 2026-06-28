@@ -389,12 +389,7 @@ export class ChatView extends ItemView {
 			streamingMessage = {
 				role: 'model',
 				content: 'Agent is starting...',
-				isStreaming: true,
-				citations: [{
-					sourceId: 'agent-workspace',
-					sourcePath: `${this.plugin.settings.workspaceFolder}/agent`,
-					content: ''
-				}]
+				isStreaming: true
 			};
 			list.push(streamingMessage);
 			if (this.activeTab === requestTab) this.renderActiveTab();
@@ -454,7 +449,6 @@ export class ChatView extends ItemView {
 		onChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void
 	): Promise<ChatMessage> {
 		const result = await this.plugin.agentService.run(text, onChunk);
-		const sourcePath = `${this.plugin.settings.workspaceFolder}/agent`;
 		return {
 			role: 'model',
 			content: [
@@ -464,12 +458,7 @@ export class ChatView extends ItemView {
 				`Agent command: \`${result.command}\``,
 				`Duration: ${(result.durationMs / 1000).toFixed(1)}s`,
 				result.exitCode === 0 ? '' : `Exit code: ${result.exitCode ?? 'unknown'}`
-			].filter(Boolean).join('\n'),
-			citations: [{
-				sourceId: 'agent-workspace',
-				sourcePath,
-				content: ''
-			}]
+			].filter(Boolean).join('\n')
 		};
 	}
 
