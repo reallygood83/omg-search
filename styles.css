@@ -296,31 +296,18 @@
 	margin-bottom: 8px;
 }
 
-.gemini-chat-citation-card {
-	display: block;
-	position: relative;
+.gemini-chat-citation-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
 	width: 100%;
-	padding: 10px 12px;
-	margin-bottom: 10px;
-	background: var(--background-primary);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: 8px;
-	cursor: default;
-}
-
-.gemini-chat-citation-card:hover {
-	border-color: var(--interactive-accent);
-	background: var(--background-modifier-hover);
-}
-
-.gemini-chat-citation-header {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr);
-	gap: 2px;
-	margin-bottom: 8px;
+	padding: 6px 0;
+	border-bottom: 1px solid var(--background-modifier-border);
 }
 
 .gemini-chat-citation-title {
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -329,24 +316,9 @@
 	color: var(--text-normal);
 }
 
-.gemini-chat-citation-path {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	font-size: 11px;
-	color: var(--text-muted);
-}
-
-.gemini-chat-citation-excerpt {
-	margin: 0 0 10px;
-	color: var(--text-muted);
-	font-size: 12px;
-	line-height: 1.45;
-}
-
 .gemini-chat-citation-actions {
 	display: flex;
-	justify-content: flex-end;
+	flex-shrink: 0;
 }
 
 .gemini-chat-citation-open {
@@ -390,44 +362,6 @@
 .gemini-chat-inline-citation-missing:hover {
 	background: var(--background-primary);
 	text-decoration: none;
-}
-
-.gemini-chat-hover-preview {
-	position: fixed;
-	z-index: 1000;
-	padding: 12px;
-	border: 1px solid var(--interactive-accent);
-	border-radius: 8px;
-	background: var(--background-primary);
-	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
-	color: var(--text-normal);
-	pointer-events: none;
-}
-
-.gemini-chat-hover-title {
-	font-size: 13px;
-	font-weight: 700;
-	line-height: 1.3;
-	margin-bottom: 4px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.gemini-chat-hover-path {
-	font-size: 11px;
-	color: var(--text-muted);
-	margin-bottom: 8px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.gemini-chat-hover-body {
-	margin: 0;
-	font-size: 12px;
-	line-height: 1.5;
-	color: var(--text-muted);
 }
 
 /* ==================== Input Container ==================== */

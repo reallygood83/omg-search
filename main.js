@@ -2203,7 +2203,6 @@ var ChatView = class extends import_obsidian4.ItemView {
     this.isComposing = false;
     this.syncStatusEl = null;
     this.welcomeEl = null;
-    this.hoverPreviewEl = null;
     this.activeTab = "chat";
     this.plugin = plugin;
   }
@@ -2239,7 +2238,6 @@ var ChatView = class extends import_obsidian4.ItemView {
     this.renderActiveTab();
   }
   async onClose() {
-    this.hideCitationHoverPreview();
   }
   // Public method to update sync status - can be called from outside
   updateSyncStatus() {
@@ -2601,7 +2599,6 @@ var ChatView = class extends import_obsidian4.ItemView {
             e.preventDefault();
             this.openNote(file.path);
           });
-          this.attachCitationHoverPreview(link, file);
           fragments.push(link);
         } else {
           const missing = document.createElement("span");
@@ -2649,94 +2646,16 @@ var ChatView = class extends import_obsidian4.ItemView {
     }
   }
   renderCitationPreview(container, citation) {
-    const card = container.createDiv({ cls: "gemini-chat-citation-card" });
+    const row = container.createDiv({ cls: "gemini-chat-citation-row" });
     const file = this.resolveCitationFile(citation.sourcePath);
     const title = (file == null ? void 0 : file.basename) || this.getCitationTitle(citation.sourcePath);
-    if (file)
-      this.attachCitationHoverPreview(card, file);
-    const header = card.createDiv({ cls: "gemini-chat-citation-header" });
-    header.createEl("div", { cls: "gemini-chat-citation-title", text: title });
-    header.createEl("div", {
-      cls: "gemini-chat-citation-path",
-      text: (file == null ? void 0 : file.path) || citation.sourcePath
-    });
-    const excerptEl = card.createEl("p", {
-      cls: "gemini-chat-citation-excerpt",
-      text: file ? "Loading preview..." : "Source note was not found in this vault."
-    });
-    const actions = card.createDiv({ cls: "gemini-chat-citation-actions" });
+    row.createEl("div", { cls: "gemini-chat-citation-title", text: title });
+    const actions = row.createDiv({ cls: "gemini-chat-citation-actions" });
     const openButton = actions.createEl("button", {
       cls: "gemini-chat-citation-open",
-      text: file ? "Open note" : "Find note"
+      text: "Find note"
     });
     openButton.addEventListener("click", () => this.openNote(citation.sourcePath));
-    if (!file)
-      return;
-    this.app.vault.read(file).then((content) => {
-      excerptEl.setText(this.makeExcerpt(content));
-    }).catch(() => {
-      excerptEl.setText("Preview could not be loaded.");
-    });
-  }
-  attachCitationHoverPreview(target, file) {
-    const show = () => {
-      this.showCitationHoverPreview(target, file);
-    };
-    const hide = () => {
-      this.hideCitationHoverPreview();
-    };
-    target.addEventListener("mouseenter", show);
-    target.addEventListener("focus", show);
-    target.addEventListener("mouseleave", hide);
-    target.addEventListener("blur", hide);
-  }
-  async showCitationHoverPreview(target, file) {
-    this.hideCitationHoverPreview();
-    const preview = document.body.createDiv({ cls: "gemini-chat-hover-preview" });
-    this.hoverPreviewEl = preview;
-    preview.createEl("div", { cls: "gemini-chat-hover-title", text: file.basename });
-    preview.createEl("div", { cls: "gemini-chat-hover-path", text: file.path });
-    const body = preview.createEl("p", {
-      cls: "gemini-chat-hover-body",
-      text: "Loading preview..."
-    });
-    this.positionHoverPreview(preview, target);
-    try {
-      const content = await this.app.vault.read(file);
-      if (this.hoverPreviewEl !== preview)
-        return;
-      body.setText(this.makeExcerpt(content, 420));
-      this.positionHoverPreview(preview, target);
-    } catch (e) {
-      if (this.hoverPreviewEl === preview)
-        body.setText("Preview could not be loaded.");
-    }
-  }
-  positionHoverPreview(preview, target) {
-    const rect = target.getBoundingClientRect();
-    const margin = 12;
-    const width = Math.min(360, window.innerWidth - margin * 2);
-    preview.style.width = `${width}px`;
-    const measured = preview.getBoundingClientRect();
-    let left = rect.left;
-    let top = rect.bottom + 8;
-    if (left + width > window.innerWidth - margin) {
-      left = window.innerWidth - width - margin;
-    }
-    if (left < margin)
-      left = margin;
-    if (top + measured.height > window.innerHeight - margin) {
-      top = rect.top - measured.height - 8;
-    }
-    if (top < margin)
-      top = margin;
-    preview.style.left = `${left}px`;
-    preview.style.top = `${top}px`;
-  }
-  hideCitationHoverPreview() {
-    var _a;
-    (_a = this.hoverPreviewEl) == null ? void 0 : _a.remove();
-    this.hoverPreviewEl = null;
   }
   resolveCitationFile(path) {
     const candidates = this.getCitationPathCandidates(path);
@@ -2777,12 +2696,6 @@ var ChatView = class extends import_obsidian4.ItemView {
     var _a;
     const cleaned = this.getCitationPathCandidates(path)[0] || path;
     return ((_a = cleaned.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/i, "")) || cleaned;
-  }
-  makeExcerpt(content, maxLength = 220) {
-    const stripped = content.replace(/^---[\s\S]*?---/, "").replace(/```[\s\S]*?```/g, "").replace(/!\[[^\]]*]\([^)]+\)/g, "").replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[#>*_`~-]/g, " ").replace(/\s+/g, " ").trim();
-    if (!stripped)
-      return "This source note has no previewable text.";
-    return stripped.length > maxLength ? `${stripped.slice(0, maxLength).trim()}...` : stripped;
   }
   clearChat() {
     if (this.activeTab === "agent") {
