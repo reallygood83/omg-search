@@ -119,6 +119,10 @@ export class SyncEngine {
 
 		for (const [path, file] of entries) {
 			try {
+				if (!this.plugin.shouldSync(file)) {
+					console.log(`[SyncEngine] Skipping ${path} - no longer in selected sync folders`);
+					continue;
+				}
 				const success = await this.syncFile(file, corpusName);
 				if (success) {
 					successCount++;
@@ -226,8 +230,8 @@ export class SyncEngine {
 	async initialSync() {
 		console.log('[SyncEngine] Starting initial sync...');
 
-		if (!this.plugin.settings.syncFolder) {
-			console.log('[SyncEngine] No sync folder configured');
+		if (this.plugin.settings.syncFolders.length === 0) {
+			console.log('[SyncEngine] No sync folders configured');
 			return;
 		}
 
@@ -242,14 +246,7 @@ export class SyncEngine {
 			}
 		}
 
-		// Clean up orphaned entries (files that no longer exist)
-		for (const path in this.plugin.settings.files) {
-			const file = this.plugin.app.vault.getAbstractFileByPath(path);
-			if (!file) {
-				console.log(`[SyncEngine] Removing orphaned entry: ${path}`);
-				delete this.plugin.settings.files[path];
-			}
-		}
+		this.pruneLocalSyncEntries();
 		await this.plugin.saveSettings();
 	}
 
@@ -257,17 +254,22 @@ export class SyncEngine {
 		console.log('[SyncEngine] Starting full sync...');
 		new Notice('Starting full sync...');
 
-		if (!this.plugin.settings.syncFolder) {
-			new Notice('Please configure a sync folder first');
+		if (this.plugin.settings.syncFolders.length === 0) {
+			new Notice('Please configure at least one sync folder first');
 			return;
 		}
 
 		const files = this.getFilesInSyncFolder();
 		console.log(`[SyncEngine] Found ${files.length} files to sync`);
 
-		// Reset all file statuses and add to queue
-		for (const path in this.plugin.settings.files) {
-			this.plugin.settings.files[path].status = 'pending';
+		this.pruneLocalSyncEntries();
+
+		// Reset selected file statuses and add to queue
+		for (const file of files) {
+			const existingData = this.plugin.settings.files[file.path];
+			if (existingData) {
+				existingData.status = 'pending';
+			}
 		}
 		await this.plugin.saveSettings();
 
@@ -285,19 +287,28 @@ export class SyncEngine {
 	// ==================== Utilities ====================
 
 	private getFilesInSyncFolder(): TFile[] {
-		const syncFolder = this.plugin.settings.syncFolder;
-		if (!syncFolder) return [];
+		if (this.plugin.settings.syncFolders.length === 0) return [];
 
 		const files: TFile[] = [];
 		const allFiles = this.plugin.app.vault.getMarkdownFiles();
 
 		for (const file of allFiles) {
-			if (file.path.startsWith(syncFolder)) {
+			if (this.plugin.isInSyncFolder(file.path)) {
 				files.push(file);
 			}
 		}
 
 		return files;
+	}
+
+	private pruneLocalSyncEntries() {
+		for (const path in this.plugin.settings.files) {
+			const file = this.plugin.app.vault.getAbstractFileByPath(path);
+			if (!file || !this.plugin.isInSyncFolder(path)) {
+				console.log(`[SyncEngine] Removing untracked sync entry: ${path}`);
+				delete this.plugin.settings.files[path];
+			}
+		}
 	}
 
 	private delay(ms: number): Promise<void> {

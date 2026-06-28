@@ -5,7 +5,7 @@ Sync your Obsidian vault with Google Gemini's File Search API for a **Private No
 ## Features
 
 ### Folder-based Auto-Sync
-- Automatically sync markdown files from a designated folder (including subfolders) to Gemini
+- Automatically sync markdown files from one or more designated folders (including subfolders) to Gemini
 - File changes (create/modify/delete/rename) are tracked and synced in real-time
 - Content-based change detection using SHA-256 hashing to minimize API calls
 
@@ -44,7 +44,7 @@ Sync your Obsidian vault with Google Gemini's File Search API for a **Private No
 2. **Configure the Plugin**
    - Open Obsidian Settings > Gemini Sync
    - Paste your API key and click "Verify"
-   - Select a folder to sync (e.g., "Notes" or "Knowledge")
+   - Select one or more folders to sync (e.g., "Notes" and "Knowledge")
    - Click "Sync Now" for initial synchronization
 
 3. **Start Chatting**
@@ -69,7 +69,7 @@ Sync your Obsidian vault with Google Gemini's File Search API for a **Private No
 | Option | Description | Default |
 |--------|-------------|---------|
 | API Key | Your Google Gemini API key | Required |
-| Sync Folder | Folder to sync with Gemini | None |
+| Sync Folders | Folders to sync with Gemini | None |
 | Corpus Display Name | Name for your knowledge base | "Obsidian Vault" |
 | Auto Sync | Automatically sync on file changes | Enabled |
 | Sync Debounce | Wait time before syncing (ms) | 3000 |

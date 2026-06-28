@@ -38,10 +38,9 @@ export default class GeminiSyncPlugin extends Plugin {
 		this.statusBarItem = this.addStatusBarItem();
 		this.updateStatusBar('Ready');
 
-		// Register file events if API key is configured
-		if (this.settings.apiKey) {
-			this.registerFileEvents();
-		}
+		// Register file events immediately so auto-sync starts working after
+		// the user configures an API key without requiring a plugin reload.
+		this.registerFileEvents();
 
 		// Add command to open chat
 		this.addCommand({
@@ -66,7 +65,7 @@ export default class GeminiSyncPlugin extends Plugin {
 		});
 
 		// Initial sync on load (if configured)
-		if (this.settings.apiKey && this.settings.syncFolder) {
+		if (this.settings.apiKey && this.settings.syncFolders.length > 0) {
 			// Delay initial sync to let vault fully load
 			setTimeout(() => {
 				this.syncEngine.initialSync();
@@ -80,6 +79,14 @@ export default class GeminiSyncPlugin extends Plugin {
 
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const configuredFolders = Array.isArray(this.settings.syncFolders)
+			? this.settings.syncFolders
+			: [];
+		this.settings.syncFolders = Array.from(new Set([
+			...(this.settings.syncFolder ? [this.settings.syncFolder] : []),
+			...configuredFolders
+		].filter(folder => folder.trim().length > 0))).sort();
+		delete this.settings.syncFolder;
 	}
 
 	async saveSettings() {
@@ -103,7 +110,7 @@ export default class GeminiSyncPlugin extends Plugin {
 		// File created
 		this.registerEvent(
 			this.app.vault.on('create', async (file: TAbstractFile) => {
-				if (file instanceof TFile && this.shouldSync(file)) {
+				if (this.settings.apiKey && file instanceof TFile && this.shouldSync(file)) {
 					console.log('File created:', file.path);
 					await this.syncEngine.handleFileCreate(file);
 				}
@@ -113,7 +120,7 @@ export default class GeminiSyncPlugin extends Plugin {
 		// File modified
 		this.registerEvent(
 			this.app.vault.on('modify', async (file: TAbstractFile) => {
-				if (file instanceof TFile && this.shouldSync(file)) {
+				if (this.settings.apiKey && file instanceof TFile && this.shouldSync(file)) {
 					console.log('File modified:', file.path);
 					await this.syncEngine.handleFileModify(file);
 				}
@@ -123,7 +130,7 @@ export default class GeminiSyncPlugin extends Plugin {
 		// File deleted
 		this.registerEvent(
 			this.app.vault.on('delete', async (file: TAbstractFile) => {
-				if (file instanceof TFile && this.shouldSync(file)) {
+				if (this.settings.apiKey && file instanceof TFile && this.shouldSync(file)) {
 					console.log('File deleted:', file.path);
 					await this.syncEngine.handleFileDelete(file);
 				}
@@ -137,7 +144,7 @@ export default class GeminiSyncPlugin extends Plugin {
 					const wasInSyncFolder = this.isInSyncFolder(oldPath);
 					const isInSyncFolder = this.shouldSync(file);
 
-					if (wasInSyncFolder || isInSyncFolder) {
+					if (this.settings.apiKey && (wasInSyncFolder || isInSyncFolder)) {
 						console.log('File renamed:', oldPath, '->', file.path);
 						await this.syncEngine.handleFileRename(file, oldPath);
 					}
@@ -147,14 +154,15 @@ export default class GeminiSyncPlugin extends Plugin {
 	}
 
 	shouldSync(file: TFile): boolean {
-		if (!this.settings.syncFolder) return false;
+		if (this.settings.syncFolders.length === 0) return false;
 		if (file.extension !== 'md') return false;
 		return this.isInSyncFolder(file.path);
 	}
 
 	isInSyncFolder(path: string): boolean {
-		if (!this.settings.syncFolder) return false;
-		return path.startsWith(this.settings.syncFolder);
+		return this.settings.syncFolders.some(folder =>
+			path === folder || path.startsWith(`${folder}/`)
+		);
 	}
 
 	updateStatusBar(status: string) {

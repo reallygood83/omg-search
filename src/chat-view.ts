@@ -35,6 +35,7 @@ export class ChatView extends ItemView {
 	private sendButton: HTMLButtonElement;
 	private messages: ChatMessage[] = [];
 	private isLoading: boolean = false;
+	private isComposing: boolean = false;
 	private syncStatusEl: HTMLElement | null = null;
 	private welcomeEl: HTMLElement | null = null;
 
@@ -101,7 +102,18 @@ export class ChatView extends ItemView {
 			placeholder: 'Ask about your notes...'
 		});
 
+		this.inputEl.addEventListener('compositionstart', () => {
+			this.isComposing = true;
+		});
+
+		this.inputEl.addEventListener('compositionend', () => {
+			this.isComposing = false;
+		});
+
 		this.inputEl.addEventListener('keydown', (e) => {
+			if (this.isComposing || e.isComposing) {
+				return;
+			}
 			if (e.key === 'Enter' && !e.shiftKey) {
 				e.preventDefault();
 				this.sendMessage();

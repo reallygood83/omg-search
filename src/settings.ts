@@ -11,7 +11,8 @@ export interface FileSyncData {
 export interface GeminiSyncSettings {
 	apiKey: string;
 	model: string;
-	syncFolder: string;
+	syncFolders: string[];
+	syncFolder?: string; // Legacy setting migrated on load.
 	corpusName: string;
 	corpusDisplayName: string;
 	autoSync: boolean;
@@ -24,7 +25,7 @@ export interface GeminiSyncSettings {
 export const DEFAULT_SETTINGS: GeminiSyncSettings = {
 	apiKey: '',
 	model: 'gemini-2.5-flash',
-	syncFolder: '',
+	syncFolders: [],
 	corpusName: '',
 	corpusDisplayName: 'Obsidian Vault',
 	autoSync: true,
@@ -86,11 +87,15 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Gemini Model')
-			.setDesc('Select the Gemini model to use for chat. Gemini 2.5 Flash is recommended for best performance.')
+			.setDesc('Select the Gemini model to use for chat. Gemini 3.5 Flash is recommended for best performance.')
 			.addDropdown(dropdown => {
-			dropdown.addOption('gemini-2.5-flash', 'Gemini 2.5 Flash (Recommended)');
-			dropdown.addOption('gemini-2.5-flash-lite', 'Gemini 2.5 Flash Lite');
-			dropdown.addOption('gemini-2.5-pro', 'Gemini 2.5 Pro');
+				dropdown.addOption('gemini-3.5-flash', 'Gemini 3.5 Flash (Recommended)');
+				dropdown.addOption('gemini-3-flash-preview', 'Gemini 3 Flash Preview');
+				dropdown.addOption('gemini-3.1-pro-preview', 'Gemini 3.1 Pro Preview');
+				dropdown.addOption('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite');
+				dropdown.addOption('gemini-2.5-flash', 'Gemini 2.5 Flash');
+				dropdown.addOption('gemini-2.5-flash-lite', 'Gemini 2.5 Flash Lite');
+				dropdown.addOption('gemini-2.5-pro', 'Gemini 2.5 Pro');
 
 				dropdown.setValue(this.plugin.settings.model);
 				dropdown.onChange(async (value) => {
@@ -105,26 +110,31 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 		// Sync Folder Section
 		containerEl.createEl('h2', { text: 'Sync Configuration' });
 
+		const folders = this.getAllFolders();
+		const selectedFolders = new Set(this.plugin.settings.syncFolders);
+
 		new Setting(containerEl)
-			.setName('Sync Folder')
-			.setDesc('Select the folder to sync with Gemini. All markdown files in this folder (including subfolders) will be synced.')
-			.addDropdown(dropdown => {
-				// Add empty option
-				dropdown.addOption('', '-- Select a folder --');
+			.setName('Sync Folders')
+			.setDesc('Select one or more folders to sync with Gemini. Markdown files in selected folders, including subfolders, will be synced.');
 
-				// Get all folders in the vault
-				const folders = this.getAllFolders();
-				folders.forEach(folder => {
-					dropdown.addOption(folder, folder);
-				});
-
-				dropdown.setValue(this.plugin.settings.syncFolder);
-				dropdown.onChange(async (value) => {
-					this.plugin.settings.syncFolder = value;
-					await this.plugin.saveSettings();
-					this.display(); // Refresh to update dashboard
-				});
-			});
+		for (const folder of folders) {
+			new Setting(containerEl)
+				.setName(folder)
+				.addToggle(toggle => toggle
+					.setValue(selectedFolders.has(folder))
+					.onChange(async (value) => {
+						const next = new Set(this.plugin.settings.syncFolders);
+						if (value) {
+							next.add(folder);
+						} else {
+							next.delete(folder);
+						}
+						this.plugin.settings.syncFolders = Array.from(next).sort();
+						await this.plugin.saveSettings();
+						this.display(); // Refresh to update dashboard
+					})
+				);
+		}
 
 		new Setting(containerEl)
 			.setName('Corpus Display Name')
@@ -184,8 +194,8 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 						new Notice('Please configure your API key first');
 						return;
 					}
-					if (!this.plugin.settings.syncFolder) {
-						new Notice('Please select a sync folder first');
+					if (this.plugin.settings.syncFolders.length === 0) {
+						new Notice('Please select at least one sync folder first');
 						return;
 					}
 					button.setButtonText('Syncing...');
@@ -310,10 +320,14 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 		}
 
 		// Show sync folder info
-		if (this.plugin.settings.syncFolder) {
+		if (this.plugin.settings.syncFolders.length > 0) {
+			const folders = this.plugin.settings.syncFolders;
+			const folderText = folders.length > 5
+				? `${folders.slice(0, 5).join(', ')} +${folders.length - 5} more`
+				: folders.join(', ');
 			container.createEl('div', {
 				cls: 'sync-folder-info',
-				text: `Watching: ${this.plugin.settings.syncFolder}/`
+				text: `Watching: ${folderText}`
 			});
 		}
 	}

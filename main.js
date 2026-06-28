@@ -34,7 +34,7 @@ var import_obsidian = require("obsidian");
 var DEFAULT_SETTINGS = {
   apiKey: "",
   model: "gemini-2.5-flash",
-  syncFolder: "",
+  syncFolders: [],
   corpusName: "",
   corpusDisplayName: "Obsidian Vault",
   autoSync: true,
@@ -77,8 +77,12 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
         }
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Gemini Model").setDesc("Select the Gemini model to use for chat. Gemini 2.5 Flash is recommended for best performance.").addDropdown((dropdown) => {
-      dropdown.addOption("gemini-2.5-flash", "Gemini 2.5 Flash (Recommended)");
+    new import_obsidian.Setting(containerEl).setName("Gemini Model").setDesc("Select the Gemini model to use for chat. Gemini 3.5 Flash is recommended for best performance.").addDropdown((dropdown) => {
+      dropdown.addOption("gemini-3.5-flash", "Gemini 3.5 Flash (Recommended)");
+      dropdown.addOption("gemini-3-flash-preview", "Gemini 3 Flash Preview");
+      dropdown.addOption("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview");
+      dropdown.addOption("gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite");
+      dropdown.addOption("gemini-2.5-flash", "Gemini 2.5 Flash");
       dropdown.addOption("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite");
       dropdown.addOption("gemini-2.5-pro", "Gemini 2.5 Pro");
       dropdown.setValue(this.plugin.settings.model);
@@ -90,19 +94,24 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
       });
     });
     containerEl.createEl("h2", { text: "Sync Configuration" });
-    new import_obsidian.Setting(containerEl).setName("Sync Folder").setDesc("Select the folder to sync with Gemini. All markdown files in this folder (including subfolders) will be synced.").addDropdown((dropdown) => {
-      dropdown.addOption("", "-- Select a folder --");
-      const folders = this.getAllFolders();
-      folders.forEach((folder) => {
-        dropdown.addOption(folder, folder);
-      });
-      dropdown.setValue(this.plugin.settings.syncFolder);
-      dropdown.onChange(async (value) => {
-        this.plugin.settings.syncFolder = value;
-        await this.plugin.saveSettings();
-        this.display();
-      });
-    });
+    const folders = this.getAllFolders();
+    const selectedFolders = new Set(this.plugin.settings.syncFolders);
+    new import_obsidian.Setting(containerEl).setName("Sync Folders").setDesc("Select one or more folders to sync with Gemini. Markdown files in selected folders, including subfolders, will be synced.");
+    for (const folder of folders) {
+      new import_obsidian.Setting(containerEl).setName(folder).addToggle(
+        (toggle) => toggle.setValue(selectedFolders.has(folder)).onChange(async (value) => {
+          const next = new Set(this.plugin.settings.syncFolders);
+          if (value) {
+            next.add(folder);
+          } else {
+            next.delete(folder);
+          }
+          this.plugin.settings.syncFolders = Array.from(next).sort();
+          await this.plugin.saveSettings();
+          this.display();
+        })
+      );
+    }
     new import_obsidian.Setting(containerEl).setName("Corpus Display Name").setDesc("A friendly name for your knowledge base in Gemini.").addText(
       (text) => text.setPlaceholder("My Obsidian Vault").setValue(this.plugin.settings.corpusDisplayName).onChange(async (value) => {
         this.plugin.settings.corpusDisplayName = value;
@@ -134,8 +143,8 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
           new import_obsidian.Notice("Please configure your API key first");
           return;
         }
-        if (!this.plugin.settings.syncFolder) {
-          new import_obsidian.Notice("Please select a sync folder first");
+        if (this.plugin.settings.syncFolders.length === 0) {
+          new import_obsidian.Notice("Please select at least one sync folder first");
           return;
         }
         button.setButtonText("Syncing...");
@@ -236,10 +245,12 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
         text: `Corpus: ${this.plugin.settings.corpusDisplayName}`
       });
     }
-    if (this.plugin.settings.syncFolder) {
+    if (this.plugin.settings.syncFolders.length > 0) {
+      const folders = this.plugin.settings.syncFolders;
+      const folderText = folders.length > 5 ? `${folders.slice(0, 5).join(", ")} +${folders.length - 5} more` : folders.join(", ");
       container.createEl("div", {
         cls: "sync-folder-info",
-        text: `Watching: ${this.plugin.settings.syncFolder}/`
+        text: `Watching: ${folderText}`
       });
     }
   }
@@ -1794,6 +1805,10 @@ var SyncEngine = class {
     let errorCount = 0;
     for (const [path, file] of entries) {
       try {
+        if (!this.plugin.shouldSync(file)) {
+          console.log(`[SyncEngine] Skipping ${path} - no longer in selected sync folders`);
+          continue;
+        }
         const success = await this.syncFile(file, corpusName);
         if (success) {
           successCount++;
@@ -1877,8 +1892,8 @@ var SyncEngine = class {
   // ==================== Bulk Sync Operations ====================
   async initialSync() {
     console.log("[SyncEngine] Starting initial sync...");
-    if (!this.plugin.settings.syncFolder) {
-      console.log("[SyncEngine] No sync folder configured");
+    if (this.plugin.settings.syncFolders.length === 0) {
+      console.log("[SyncEngine] No sync folders configured");
       return;
     }
     const files = this.getFilesInSyncFolder();
@@ -1889,26 +1904,24 @@ var SyncEngine = class {
         this.addToQueue(file);
       }
     }
-    for (const path in this.plugin.settings.files) {
-      const file = this.plugin.app.vault.getAbstractFileByPath(path);
-      if (!file) {
-        console.log(`[SyncEngine] Removing orphaned entry: ${path}`);
-        delete this.plugin.settings.files[path];
-      }
-    }
+    this.pruneLocalSyncEntries();
     await this.plugin.saveSettings();
   }
   async fullSync() {
     console.log("[SyncEngine] Starting full sync...");
     new import_obsidian3.Notice("Starting full sync...");
-    if (!this.plugin.settings.syncFolder) {
-      new import_obsidian3.Notice("Please configure a sync folder first");
+    if (this.plugin.settings.syncFolders.length === 0) {
+      new import_obsidian3.Notice("Please configure at least one sync folder first");
       return;
     }
     const files = this.getFilesInSyncFolder();
     console.log(`[SyncEngine] Found ${files.length} files to sync`);
-    for (const path in this.plugin.settings.files) {
-      this.plugin.settings.files[path].status = "pending";
+    this.pruneLocalSyncEntries();
+    for (const file of files) {
+      const existingData = this.plugin.settings.files[file.path];
+      if (existingData) {
+        existingData.status = "pending";
+      }
     }
     await this.plugin.saveSettings();
     for (const file of files) {
@@ -1919,17 +1932,25 @@ var SyncEngine = class {
   }
   // ==================== Utilities ====================
   getFilesInSyncFolder() {
-    const syncFolder = this.plugin.settings.syncFolder;
-    if (!syncFolder)
+    if (this.plugin.settings.syncFolders.length === 0)
       return [];
     const files = [];
     const allFiles = this.plugin.app.vault.getMarkdownFiles();
     for (const file of allFiles) {
-      if (file.path.startsWith(syncFolder)) {
+      if (this.plugin.isInSyncFolder(file.path)) {
         files.push(file);
       }
     }
     return files;
+  }
+  pruneLocalSyncEntries() {
+    for (const path in this.plugin.settings.files) {
+      const file = this.plugin.app.vault.getAbstractFileByPath(path);
+      if (!file || !this.plugin.isInSyncFolder(path)) {
+        console.log(`[SyncEngine] Removing untracked sync entry: ${path}`);
+        delete this.plugin.settings.files[path];
+      }
+    }
   }
   delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1981,6 +2002,7 @@ var ChatView = class extends import_obsidian4.ItemView {
     super(leaf);
     this.messages = [];
     this.isLoading = false;
+    this.isComposing = false;
     this.syncStatusEl = null;
     this.welcomeEl = null;
     this.plugin = plugin;
@@ -2024,7 +2046,16 @@ var ChatView = class extends import_obsidian4.ItemView {
       cls: "gemini-chat-input",
       placeholder: "Ask about your notes..."
     });
+    this.inputEl.addEventListener("compositionstart", () => {
+      this.isComposing = true;
+    });
+    this.inputEl.addEventListener("compositionend", () => {
+      this.isComposing = false;
+    });
     this.inputEl.addEventListener("keydown", (e) => {
+      if (this.isComposing || e.isComposing) {
+        return;
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         this.sendMessage();
@@ -2426,9 +2457,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
     this.addSettingTab(new GeminiSyncSettingTab(this.app, this));
     this.statusBarItem = this.addStatusBarItem();
     this.updateStatusBar("Ready");
-    if (this.settings.apiKey) {
-      this.registerFileEvents();
-    }
+    this.registerFileEvents();
     this.addCommand({
       id: "open-gemini-chat",
       name: "Open Gemini Chat",
@@ -2447,7 +2476,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
         await this.syncEngine.fullSync();
       }
     });
-    if (this.settings.apiKey && this.settings.syncFolder) {
+    if (this.settings.apiKey && this.settings.syncFolders.length > 0) {
       setTimeout(() => {
         this.syncEngine.initialSync();
       }, 2e3);
@@ -2458,6 +2487,12 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const configuredFolders = Array.isArray(this.settings.syncFolders) ? this.settings.syncFolders : [];
+    this.settings.syncFolders = Array.from(new Set([
+      ...this.settings.syncFolder ? [this.settings.syncFolder] : [],
+      ...configuredFolders
+    ].filter((folder) => folder.trim().length > 0))).sort();
+    delete this.settings.syncFolder;
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -2476,7 +2511,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
   registerFileEvents() {
     this.registerEvent(
       this.app.vault.on("create", async (file) => {
-        if (file instanceof import_obsidian5.TFile && this.shouldSync(file)) {
+        if (this.settings.apiKey && file instanceof import_obsidian5.TFile && this.shouldSync(file)) {
           console.log("File created:", file.path);
           await this.syncEngine.handleFileCreate(file);
         }
@@ -2484,7 +2519,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("modify", async (file) => {
-        if (file instanceof import_obsidian5.TFile && this.shouldSync(file)) {
+        if (this.settings.apiKey && file instanceof import_obsidian5.TFile && this.shouldSync(file)) {
           console.log("File modified:", file.path);
           await this.syncEngine.handleFileModify(file);
         }
@@ -2492,7 +2527,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("delete", async (file) => {
-        if (file instanceof import_obsidian5.TFile && this.shouldSync(file)) {
+        if (this.settings.apiKey && file instanceof import_obsidian5.TFile && this.shouldSync(file)) {
           console.log("File deleted:", file.path);
           await this.syncEngine.handleFileDelete(file);
         }
@@ -2503,7 +2538,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
         if (file instanceof import_obsidian5.TFile) {
           const wasInSyncFolder = this.isInSyncFolder(oldPath);
           const isInSyncFolder = this.shouldSync(file);
-          if (wasInSyncFolder || isInSyncFolder) {
+          if (this.settings.apiKey && (wasInSyncFolder || isInSyncFolder)) {
             console.log("File renamed:", oldPath, "->", file.path);
             await this.syncEngine.handleFileRename(file, oldPath);
           }
@@ -2512,16 +2547,16 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
     );
   }
   shouldSync(file) {
-    if (!this.settings.syncFolder)
+    if (this.settings.syncFolders.length === 0)
       return false;
     if (file.extension !== "md")
       return false;
     return this.isInSyncFolder(file.path);
   }
   isInSyncFolder(path) {
-    if (!this.settings.syncFolder)
-      return false;
-    return path.startsWith(this.settings.syncFolder);
+    return this.settings.syncFolders.some(
+      (folder) => path === folder || path.startsWith(`${folder}/`)
+    );
   }
   updateStatusBar(status) {
     this.statusBarItem.setText(`Gemini: ${status}`);
