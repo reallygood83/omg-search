@@ -1708,7 +1708,10 @@ Instructions:
 1. Answer questions based primarily on the provided notes.
 2. When referencing information from a note, cite it using the format [Source: filename.md].
 3. If the information is not in the notes, you can provide general knowledge but clearly state that it's not from the notes.
-4. Be concise and helpful.`;
+4. Answer in the same language as the user's latest message.
+5. If the user's latest message is Korean, answer naturally in Korean even when source notes contain English terms or titles.
+6. Preserve technical terms, product names, note titles, and quoted source phrases in their original language when needed.
+7. Be concise and helpful.`;
       this.chatHistory.push({
         role: "user",
         parts: [{ text: userMessage }]
@@ -1721,7 +1724,7 @@ Instructions:
           },
           {
             role: "model",
-            parts: [{ text: "I understand. I will help answer questions based on your Obsidian notes and cite sources when referencing specific information." }]
+            parts: [{ text: "\uC54C\uACA0\uC2B5\uB2C8\uB2E4. \uC0AC\uC6A9\uC790\uC758 \uCD5C\uC2E0 \uC9C8\uBB38 \uC5B8\uC5B4\uC5D0 \uB9DE\uCDB0 \uB2F5\uD558\uACE0, \uD2B9\uC815 \uB178\uD2B8\uB97C \uCC38\uC870\uD560 \uB54C\uB294 \uCD9C\uCC98\uB97C \uD45C\uC2DC\uD558\uACA0\uC2B5\uB2C8\uB2E4." }]
           },
           ...this.chatHistory.slice(0, -1)
           // Previous history without current message
