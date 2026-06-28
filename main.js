@@ -2231,7 +2231,7 @@ var ChatView = class extends import_obsidian4.ItemView {
       }, 0);
     });
     this.inputEl.addEventListener("keydown", (e) => {
-      if (this.isComposing || e.isComposing || e.keyCode === 229)
+      if (this.isComposing || e.isComposing)
         return;
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();

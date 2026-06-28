@@ -193,7 +193,7 @@ export class ChatView extends ItemView {
 		});
 
 		this.inputEl.addEventListener('keydown', (e) => {
-			if (this.isComposing || e.isComposing || e.keyCode === 229) return;
+			if (this.isComposing || e.isComposing) return;
 			if (e.key === 'Enter' && !e.shiftKey) {
 				e.preventDefault();
 				this.sendMessage();
