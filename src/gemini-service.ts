@@ -522,7 +522,7 @@ export class GeminiService {
 	async chat(userMessage: string): Promise<ChatMessage> {
 		this.ensureCurrentModel();
 
-		if (!this.model) {
+		if (!this.plugin.settings.apiKey) {
 			return {
 				role: 'model',
 				content: 'Gemini API 키가 설정되어 있지 않습니다. 설정에서 API 키를 입력해 주세요.'
@@ -530,6 +530,18 @@ export class GeminiService {
 		}
 
 		try {
+			const fileSearchResponse = await this.chatWithFileSearch(userMessage);
+			if (fileSearchResponse) {
+				return fileSearchResponse;
+			}
+
+			if (!this.model) {
+				return {
+					role: 'model',
+					content: 'Gemini API 키가 설정되어 있지 않습니다. 설정에서 API 키를 입력해 주세요.'
+				};
+			}
+
 			// Build context from synced files
 			const context = await this.buildContext();
 
@@ -609,6 +621,144 @@ Instructions:
 				content: this.formatChatError(error)
 			};
 		}
+	}
+
+	private async chatWithFileSearch(userMessage: string): Promise<ChatMessage | null> {
+		const corpusName = this.plugin.settings.corpusName || await this.getOrCreateCorpus();
+		if (!corpusName) return null;
+
+		const input = [
+			'You are a helpful assistant that answers questions from the user\'s synced Obsidian notes.',
+			'Use the File Search tool as the primary source of truth.',
+			'Answer in the same language as the user\'s latest message. If the user writes Korean, answer naturally in Korean.',
+			'When the File Search result does not support the answer, say that clearly instead of guessing.',
+			'Preserve note titles, product names, and technical terms in their original language when useful.',
+			'',
+			'User request:',
+			userMessage
+		].join('\n');
+
+		try {
+			const response = await this.apiRequest(
+				`${API_BASE_URL}/interactions?key=${this.plugin.settings.apiKey}`,
+				'POST',
+				{
+					model: this.plugin.settings.model,
+					input: [{ type: 'text', text: input }],
+					tools: [{
+						type: 'file_search',
+						file_search_store_names: [corpusName]
+					}]
+				}
+			);
+
+			if (!response.ok) {
+				console.warn('File Search interaction failed, falling back to local context:', response.data);
+				return null;
+			}
+
+			const { text, citations } = this.extractInteractionOutput(response.data);
+			if (!text.trim()) return null;
+
+			const usage = response.data?.usageMetadata || response.data?.usage_metadata || {};
+			const outputTokens = Number(usage.candidatesTokenCount || usage.outputTokenCount || this.plugin.estimateTokens(text));
+			const inputTokens = Number(usage.promptTokenCount || usage.inputTokenCount || this.plugin.estimateTokens(input));
+			await this.plugin.recordBudgetUsage({
+				type: 'chat',
+				model: this.plugin.settings.model,
+				inputTokens,
+				outputTokens,
+				estimatedCostUsd: this.plugin.estimateGeminiCost(this.plugin.settings.model, inputTokens, outputTokens),
+				success: true
+			});
+
+			this.chatHistory.push({
+				role: 'user',
+				parts: [{ text: userMessage }]
+			});
+			this.chatHistory.push({
+				role: 'model',
+				parts: [{ text }]
+			});
+
+			return {
+				role: 'model',
+				content: text,
+				citations
+			};
+		} catch (error) {
+			console.warn('File Search interaction error, falling back to local context:', error);
+			return null;
+		}
+	}
+
+	private extractInteractionOutput(data: any): { text: string; citations: Citation[] } {
+		const texts: string[] = [];
+		const citations: Citation[] = [];
+		const steps = Array.isArray(data?.steps) ? data.steps : [];
+
+		for (const step of steps) {
+			if (step?.type !== 'model_output') continue;
+			const contentBlocks = Array.isArray(step.content) ? step.content : [];
+			for (const block of contentBlocks) {
+				if (block?.type === 'text' && typeof block.text === 'string') {
+					texts.push(block.text);
+				}
+				const annotations = Array.isArray(block?.annotations) ? block.annotations : [];
+				for (const annotation of annotations) {
+					const citation = this.citationFromFileSearchAnnotation(annotation);
+					if (citation && !citations.find(existing => existing.sourcePath === citation.sourcePath)) {
+						citations.push(citation);
+					}
+				}
+			}
+		}
+
+		return { text: texts.join('\n\n').trim(), citations };
+	}
+
+	private citationFromFileSearchAnnotation(annotation: any): Citation | null {
+		if (!annotation || annotation.type !== 'file_citation') return null;
+		const candidates = [
+			annotation.file_name,
+			annotation.fileName,
+			annotation.source,
+			annotation.uri,
+			annotation.document_name,
+			annotation.documentName
+		].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+		for (const candidate of candidates) {
+			const path = this.resolveSyncedCitationPath(candidate);
+			if (path) {
+				return {
+					sourceId: path,
+					sourcePath: path,
+					content: ''
+				};
+			}
+
+			const byUri = this.resolveSyncedCitationUri(candidate);
+			if (byUri) {
+				return {
+					sourceId: byUri,
+					sourcePath: byUri,
+					content: ''
+				};
+			}
+		}
+
+		return null;
+	}
+
+	private resolveSyncedCitationUri(uri: string): string | null {
+		for (const path in this.plugin.settings.files) {
+			const syncData = this.plugin.settings.files[path];
+			if (syncData.status !== 'synced') continue;
+			if (!this.plugin.isInSyncFolder(path)) continue;
+			if (syncData.uri === uri || uri.includes(syncData.uri)) return path;
+		}
+		return null;
 	}
 
 	private async sendMessageWithRetry(chat: any, userMessage: string) {
