@@ -177,9 +177,9 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Antigravity CLI Path')
-			.setDesc('Path or command used by the Agent tab. Defaults to agy.')
+			.setDesc('Path or command used by the Agent tab. Use a full path if Obsidian cannot find agy from your shell PATH.')
 			.addText(text => text
-				.setPlaceholder('agy')
+				.setPlaceholder('/Users/you/.local/bin/agy')
 				.setValue(this.plugin.settings.agentCliPath)
 				.onChange(async (value) => {
 					this.plugin.settings.agentCliPath = value.trim() || 'agy';

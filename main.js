@@ -127,8 +127,8 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
       })
     );
     containerEl.createEl("h2", { text: "Agent Workspace" });
-    new import_obsidian.Setting(containerEl).setName("Antigravity CLI Path").setDesc("Path or command used by the Agent tab. Defaults to agy.").addText(
-      (text) => text.setPlaceholder("agy").setValue(this.plugin.settings.agentCliPath).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Antigravity CLI Path").setDesc("Path or command used by the Agent tab. Use a full path if Obsidian cannot find agy from your shell PATH.").addText(
+      (text) => text.setPlaceholder("/Users/you/.local/bin/agy").setValue(this.plugin.settings.agentCliPath).onChange(async (value) => {
         this.plugin.settings.agentCliPath = value.trim() || "agy";
         await this.plugin.saveSettings();
       })
@@ -2655,6 +2655,8 @@ ${content}`;
 // src/agent-service.ts
 var import_obsidian5 = require("obsidian");
 var import_child_process = require("child_process");
+var import_fs = require("fs");
+var import_os = require("os");
 var AgentService = class {
   constructor(plugin) {
     this.plugin = plugin;
@@ -2663,8 +2665,14 @@ var AgentService = class {
     const started = Date.now();
     const command = this.plugin.settings.agentCliPath.trim() || "agy";
     const args = ["--print", this.buildPrompt(prompt)];
+    const resolvedCommand = this.resolveCommand(command);
     try {
-      const { stdout, stderr } = await this.exec(command, args);
+      if (!resolvedCommand) {
+        throw Object.assign(new Error(this.getMissingCommandMessage(command)), {
+          code: "ENOENT"
+        });
+      }
+      const { stdout, stderr } = await this.exec(resolvedCommand, args);
       const output = [stdout.trim(), stderr.trim() ? `
 
 ---
@@ -2672,7 +2680,7 @@ Agent stderr:
 ${stderr.trim()}` : ""].join("").trim();
       return {
         content: output || "Agent completed without text output.",
-        command: `${command} --print`,
+        command: `${resolvedCommand} --print`,
         exitCode: 0,
         durationMs: Date.now() - started
       };
@@ -2685,7 +2693,7 @@ ${stderr.trim()}` : ""].join("").trim();
         content: `Agent run failed.
 
 ${message}`,
-        command: `${command} --print`,
+        command: `${resolvedCommand || command} --print`,
         exitCode: typeof (error == null ? void 0 : error.code) === "number" ? error.code : null,
         durationMs: Date.now() - started
       };
@@ -2745,6 +2753,34 @@ ${message}`,
       env[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
     }
     return env;
+  }
+  resolveCommand(command) {
+    if (command.includes("/"))
+      return (0, import_fs.existsSync)(command) ? command : null;
+    const paths = [
+      ...(process.env.PATH || "").split(":"),
+      `${(0, import_os.homedir)()}/.local/bin`,
+      `${(0, import_os.homedir)()}/.antigravity/antigravity/bin`,
+      `${(0, import_os.homedir)()}/.antigravity-ide/antigravity-ide/bin`,
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin"
+    ].filter(Boolean);
+    for (const dir of paths) {
+      const candidate = `${dir}/${command}`;
+      if ((0, import_fs.existsSync)(candidate))
+        return candidate;
+    }
+    return null;
+  }
+  getMissingCommandMessage(command) {
+    return [
+      `Could not find the Agent CLI command "${command}".`,
+      "If Obsidian was opened from Finder or Dock, it may not inherit your shell PATH.",
+      "Open Settings > Master of Knowledge > Agent Workspace and set Antigravity CLI Path to the full command path.",
+      `On this Mac it is often: ${(0, import_os.homedir)()}/.local/bin/agy`
+    ].join("\n");
   }
 };
 

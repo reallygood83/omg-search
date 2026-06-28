@@ -1,5 +1,7 @@
 import { Notice } from 'obsidian';
 import { execFile } from 'child_process';
+import { existsSync } from 'fs';
+import { homedir } from 'os';
 import GeminiSyncPlugin from './main';
 
 export interface AgentRunResult {
@@ -16,15 +18,21 @@ export class AgentService {
 		const started = Date.now();
 		const command = this.plugin.settings.agentCliPath.trim() || 'agy';
 		const args = ['--print', this.buildPrompt(prompt)];
+		const resolvedCommand = this.resolveCommand(command);
 
 		try {
-			const { stdout, stderr } = await this.exec(command, args);
+			if (!resolvedCommand) {
+				throw Object.assign(new Error(this.getMissingCommandMessage(command)), {
+					code: 'ENOENT'
+				});
+			}
+			const { stdout, stderr } = await this.exec(resolvedCommand, args);
 			const output = [stdout.trim(), stderr.trim() ? `\n\n---\nAgent stderr:\n${stderr.trim()}` : '']
 				.join('')
 				.trim();
 			return {
 				content: output || 'Agent completed without text output.',
-				command: `${command} --print`,
+				command: `${resolvedCommand} --print`,
 				exitCode: 0,
 				durationMs: Date.now() - started
 			};
@@ -35,7 +43,7 @@ export class AgentService {
 			new Notice('Agent run failed. Check the result card for details.');
 			return {
 				content: `Agent run failed.\n\n${message}`,
-				command: `${command} --print`,
+				command: `${resolvedCommand || command} --print`,
 				exitCode: typeof error?.code === 'number' ? error.code : null,
 				durationMs: Date.now() - started
 			};
@@ -97,5 +105,35 @@ export class AgentService {
 			env[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
 		}
 		return env;
+	}
+
+	private resolveCommand(command: string): string | null {
+		if (command.includes('/')) return existsSync(command) ? command : null;
+
+		const paths = [
+			...(process.env.PATH || '').split(':'),
+			`${homedir()}/.local/bin`,
+			`${homedir()}/.antigravity/antigravity/bin`,
+			`${homedir()}/.antigravity-ide/antigravity-ide/bin`,
+			'/opt/homebrew/bin',
+			'/usr/local/bin',
+			'/usr/bin',
+			'/bin'
+		].filter(Boolean);
+
+		for (const dir of paths) {
+			const candidate = `${dir}/${command}`;
+			if (existsSync(candidate)) return candidate;
+		}
+		return null;
+	}
+
+	private getMissingCommandMessage(command: string): string {
+		return [
+			`Could not find the Agent CLI command "${command}".`,
+			'If Obsidian was opened from Finder or Dock, it may not inherit your shell PATH.',
+			'Open Settings > Master of Knowledge > Agent Workspace and set Antigravity CLI Path to the full command path.',
+			`On this Mac it is often: ${homedir()}/.local/bin/agy`
+		].join('\n');
 	}
 }
