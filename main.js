@@ -43,6 +43,7 @@ var DEFAULT_SETTINGS = {
   agentPermissionMode: "review",
   agentTimeoutSeconds: 180,
   agentEnvironment: "",
+  agentWebSearchEnabled: false,
   corpusName: "",
   corpusDisplayName: "Obsidian Vault",
   autoSync: true,
@@ -2219,6 +2220,9 @@ var ChatView = class extends import_obsidian4.ItemView {
         this.renderMessage(msg);
     }
     this.inputContainer = this.dashboardContentEl.createDiv({ cls: "gemini-chat-input-container" });
+    if (this.activeTab === "agent") {
+      this.renderAgentModeBar(this.inputContainer);
+    }
     this.inputEl = this.inputContainer.createEl("textarea", {
       cls: "gemini-chat-input",
       placeholder: this.activeTab === "agent" ? "Ask the Agent to research, compile, map, or write..." : "Ask about your notes..."
@@ -2295,13 +2299,11 @@ var ChatView = class extends import_obsidian4.ItemView {
         text: "\u26A0\uFE0F No notes synced yet. Configure sync in settings to get started."
       });
     }
+    if (this.activeTab === "agent")
+      return;
     const examplesEl = this.welcomeEl.createDiv({ cls: "gemini-chat-examples" });
     examplesEl.createEl("p", { text: "Try asking:" });
-    const examples = this.activeTab === "agent" ? [
-      "/web-search Research the latest context for this note and return sources",
-      "/compile Turn the current answer into an _omg compiled note",
-      "/map Build a graph JSON from the cited sources"
-    ] : [
+    const examples = [
       "What are the main topics in my notes?",
       "Summarize my notes about [topic]",
       "Find connections between [topic A] and [topic B]"
@@ -2316,6 +2318,23 @@ var ChatView = class extends import_obsidian4.ItemView {
         this.inputEl.focus();
       });
     }
+  }
+  renderAgentModeBar(container) {
+    const modeBar = container.createDiv({ cls: "mok-agent-mode-bar" });
+    const webSearchButton = modeBar.createEl("button", {
+      cls: this.plugin.settings.agentWebSearchEnabled ? "mok-agent-mode-toggle mok-agent-mode-toggle-active" : "mok-agent-mode-toggle",
+      text: this.plugin.settings.agentWebSearchEnabled ? "Web Search On" : "Web Search Off"
+    });
+    webSearchButton.setAttr("aria-pressed", String(this.plugin.settings.agentWebSearchEnabled));
+    webSearchButton.addEventListener("click", async () => {
+      this.plugin.settings.agentWebSearchEnabled = !this.plugin.settings.agentWebSearchEnabled;
+      await this.plugin.saveSettings();
+      this.renderActiveTab();
+    });
+    modeBar.createSpan({
+      cls: "mok-agent-mode-hint",
+      text: this.plugin.settings.agentWebSearchEnabled ? "Agent may use current web sources." : "Agent stays focused on vault context unless asked."
+    });
   }
   async sendMessage() {
     const text = this.inputEl.value.trim();
@@ -2792,13 +2811,15 @@ ${message}`,
     const workspaceFolder = this.plugin.settings.workspaceFolder;
     const trustMode = this.plugin.settings.agentPermissionMode;
     const scope = this.plugin.settings.syncFolders.join(", ") || "No sync folders selected";
+    const webSearch = this.plugin.settings.agentWebSearchEnabled;
     return [
       "You are running inside the Master of Knowledge Obsidian plugin.",
       `Trust mode: ${trustMode}.`,
+      `Web search mode: ${webSearch ? "enabled" : "disabled"}.`,
       `Workspace folder for generated artifacts: ${workspaceFolder}.`,
       `Selected knowledge folders: ${scope}.`,
       activeFile ? `Active note path: ${activeFile.path}.` : "No active note is open.",
-      "Return markdown with clear sources when you use web or vault evidence.",
+      webSearch ? "Use web search when current external information would improve the answer, and return markdown with clear web and vault sources." : "Do not use web search unless the user explicitly asks for it in the prompt. Prefer vault evidence.",
       "Do not modify user notes directly unless the prompt explicitly asks for it. Prefer a preview-ready result.",
       "",
       "User request:",
@@ -2943,6 +2964,7 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
     this.settings.agentPermissionMode = this.settings.agentPermissionMode || DEFAULT_SETTINGS.agentPermissionMode;
     this.settings.agentTimeoutSeconds = this.settings.agentTimeoutSeconds || DEFAULT_SETTINGS.agentTimeoutSeconds;
     this.settings.agentEnvironment = this.settings.agentEnvironment || DEFAULT_SETTINGS.agentEnvironment;
+    this.settings.agentWebSearchEnabled = typeof this.settings.agentWebSearchEnabled === "boolean" ? this.settings.agentWebSearchEnabled : DEFAULT_SETTINGS.agentWebSearchEnabled;
   }
   async saveSettings() {
     await this.saveData(this.settings);

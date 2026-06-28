@@ -111,6 +111,9 @@ export default class GeminiSyncPlugin extends Plugin {
 		this.settings.agentPermissionMode = this.settings.agentPermissionMode || DEFAULT_SETTINGS.agentPermissionMode;
 		this.settings.agentTimeoutSeconds = this.settings.agentTimeoutSeconds || DEFAULT_SETTINGS.agentTimeoutSeconds;
 		this.settings.agentEnvironment = this.settings.agentEnvironment || DEFAULT_SETTINGS.agentEnvironment;
+		this.settings.agentWebSearchEnabled = typeof this.settings.agentWebSearchEnabled === 'boolean'
+			? this.settings.agentWebSearchEnabled
+			: DEFAULT_SETTINGS.agentWebSearchEnabled;
 	}
 
 	async saveSettings() {

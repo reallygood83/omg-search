@@ -176,6 +176,9 @@ export class ChatView extends ItemView {
 		}
 
 		this.inputContainer = this.dashboardContentEl.createDiv({ cls: 'gemini-chat-input-container' });
+		if (this.activeTab === 'agent') {
+			this.renderAgentModeBar(this.inputContainer);
+		}
 		this.inputEl = this.inputContainer.createEl('textarea', {
 			cls: 'gemini-chat-input',
 			placeholder: this.activeTab === 'agent'
@@ -263,20 +266,16 @@ export class ChatView extends ItemView {
 		}
 
 		// Example prompts
+		if (this.activeTab === 'agent') return;
+
 		const examplesEl = this.welcomeEl.createDiv({ cls: 'gemini-chat-examples' });
 		examplesEl.createEl('p', { text: 'Try asking:' });
 
-		const examples = this.activeTab === 'agent'
-			? [
-				'/web-search Research the latest context for this note and return sources',
-				'/compile Turn the current answer into an _omg compiled note',
-				'/map Build a graph JSON from the cited sources'
-			]
-			: [
-				'What are the main topics in my notes?',
-				'Summarize my notes about [topic]',
-				'Find connections between [topic A] and [topic B]'
-			];
+		const examples = [
+			'What are the main topics in my notes?',
+			'Summarize my notes about [topic]',
+			'Find connections between [topic A] and [topic B]'
+		];
 
 		for (const example of examples) {
 			const exampleBtn = examplesEl.createEl('button', {
@@ -288,6 +287,28 @@ export class ChatView extends ItemView {
 				this.inputEl.focus();
 			});
 		}
+	}
+
+	private renderAgentModeBar(container: HTMLElement) {
+		const modeBar = container.createDiv({ cls: 'mok-agent-mode-bar' });
+		const webSearchButton = modeBar.createEl('button', {
+			cls: this.plugin.settings.agentWebSearchEnabled
+				? 'mok-agent-mode-toggle mok-agent-mode-toggle-active'
+				: 'mok-agent-mode-toggle',
+			text: this.plugin.settings.agentWebSearchEnabled ? 'Web Search On' : 'Web Search Off'
+		});
+		webSearchButton.setAttr('aria-pressed', String(this.plugin.settings.agentWebSearchEnabled));
+		webSearchButton.addEventListener('click', async () => {
+			this.plugin.settings.agentWebSearchEnabled = !this.plugin.settings.agentWebSearchEnabled;
+			await this.plugin.saveSettings();
+			this.renderActiveTab();
+		});
+		modeBar.createSpan({
+			cls: 'mok-agent-mode-hint',
+			text: this.plugin.settings.agentWebSearchEnabled
+				? 'Agent may use current web sources.'
+				: 'Agent stays focused on vault context unless asked.'
+		});
 	}
 
 	private async sendMessage() {

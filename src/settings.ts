@@ -21,6 +21,7 @@ export interface GeminiSyncSettings {
 	agentPermissionMode: 'review' | 'auto' | 'yolo';
 	agentTimeoutSeconds: number;
 	agentEnvironment: string;
+	agentWebSearchEnabled: boolean;
 	corpusName: string;
 	corpusDisplayName: string;
 	autoSync: boolean;
@@ -42,6 +43,7 @@ export const DEFAULT_SETTINGS: GeminiSyncSettings = {
 	agentPermissionMode: 'review',
 	agentTimeoutSeconds: 180,
 	agentEnvironment: '',
+	agentWebSearchEnabled: false,
 	corpusName: '',
 	corpusDisplayName: 'Obsidian Vault',
 	autoSync: true,

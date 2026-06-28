@@ -57,14 +57,18 @@ export class AgentService {
 		const workspaceFolder = this.plugin.settings.workspaceFolder;
 		const trustMode = this.plugin.settings.agentPermissionMode;
 		const scope = this.plugin.settings.syncFolders.join(', ') || 'No sync folders selected';
+		const webSearch = this.plugin.settings.agentWebSearchEnabled;
 
 		return [
 			'You are running inside the Master of Knowledge Obsidian plugin.',
 			`Trust mode: ${trustMode}.`,
+			`Web search mode: ${webSearch ? 'enabled' : 'disabled'}.`,
 			`Workspace folder for generated artifacts: ${workspaceFolder}.`,
 			`Selected knowledge folders: ${scope}.`,
 			activeFile ? `Active note path: ${activeFile.path}.` : 'No active note is open.',
-			'Return markdown with clear sources when you use web or vault evidence.',
+			webSearch
+				? 'Use web search when current external information would improve the answer, and return markdown with clear web and vault sources.'
+				: 'Do not use web search unless the user explicitly asks for it in the prompt. Prefer vault evidence.',
 			'Do not modify user notes directly unless the prompt explicitly asks for it. Prefer a preview-ready result.',
 			'',
 			'User request:',
