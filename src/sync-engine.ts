@@ -322,6 +322,8 @@ export class SyncEngine {
 		let error = 0;
 
 		for (const path in files) {
+			const file = this.plugin.app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile) || !this.plugin.isInSyncFolder(path)) continue;
 			const status = files[path].status;
 			if (status === 'synced') synced++;
 			else if (status === 'pending') pending++;

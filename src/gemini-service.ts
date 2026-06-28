@@ -525,7 +525,7 @@ ${context}
 
 Instructions:
 1. Answer questions based primarily on the provided notes.
-2. When referencing information from a note, cite it using the format [Source: filename.md].
+2. When referencing information from a note, cite it using the exact full vault path from the note header, using the format [Source: folder/note.md].
 3. If the information is not in the notes, you can provide general knowledge but clearly state that it's not from the notes.
 4. Answer in the same language as the user's latest message.
 5. If the user's latest message is Korean, answer naturally in Korean even when source notes contain English terms or titles.
@@ -599,7 +599,7 @@ Instructions:
 		const contexts: string[] = [];
 
 		for (const path in files) {
-			if (files[path].status === 'synced') {
+			if (files[path].status === 'synced' && this.plugin.isInSyncFolder(path)) {
 				try {
 					const file = this.plugin.app.vault.getAbstractFileByPath(path);
 					if (file && file instanceof TFile && file.extension === 'md') {
@@ -627,22 +627,57 @@ Instructions:
 
 	private extractCitations(text: string): Citation[] {
 		const citations: Citation[] = [];
-		// Match patterns like [Source: filename.md] or [[filename.md]]
-		const pattern = /\[Source:\s*([^\]]+)\]|\[\[([^\]]+)\]\]/g;
+		// Only explicit source markers are treated as citations. Regular wiki links
+		// in generated advice should not become source cards.
+		const pattern = /\[Source:\s*([^\]]+)\]/g;
 		let match;
 
 		while ((match = pattern.exec(text)) !== null) {
-			const sourcePath = match[1] || match[2];
+			const sourcePath = this.resolveSyncedCitationPath(match[1] || '');
 			if (sourcePath && !citations.find(c => c.sourcePath === sourcePath)) {
 				citations.push({
 					sourceId: sourcePath,
-					sourcePath: sourcePath.trim(),
+					sourcePath,
 					content: ''
 				});
 			}
 		}
 
 		return citations;
+	}
+
+	private resolveSyncedCitationPath(rawPath: string): string | null {
+		const cleaned = rawPath
+			.trim()
+			.replace(/^["']|["']$/g, '')
+			.split('|')[0]
+			.trim();
+		if (!cleaned) return null;
+
+		const candidates = [cleaned];
+		if (!cleaned.endsWith('.md')) candidates.push(`${cleaned}.md`);
+		const normalizedCandidates = new Set(candidates.map(path => this.normalizeCitationPath(path)));
+
+		for (const path in this.plugin.settings.files) {
+			if (this.plugin.settings.files[path].status !== 'synced') continue;
+			if (!this.plugin.isInSyncFolder(path)) continue;
+			const file = this.plugin.app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile)) continue;
+
+			const normalizedPath = this.normalizeCitationPath(file.path);
+			const normalizedName = this.normalizeCitationPath(file.name);
+			if (normalizedCandidates.has(normalizedPath) ||
+				normalizedCandidates.has(normalizedName) ||
+				Array.from(normalizedCandidates).some(candidate => normalizedPath.endsWith(candidate))) {
+				return file.path;
+			}
+		}
+
+		return null;
+	}
+
+	private normalizeCitationPath(path: string): string {
+		return path.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
 	}
 
 	clearChatHistory() {

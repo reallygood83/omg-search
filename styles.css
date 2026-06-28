@@ -298,12 +298,19 @@
 
 .gemini-chat-citation-card {
 	display: block;
+	position: relative;
 	width: 100%;
 	padding: 10px 12px;
 	margin-bottom: 10px;
 	background: var(--background-primary);
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 8px;
+	cursor: default;
+}
+
+.gemini-chat-citation-card:hover {
+	border-color: var(--interactive-accent);
+	background: var(--background-modifier-hover);
 }
 
 .gemini-chat-citation-header {
@@ -371,6 +378,56 @@
 .gemini-chat-inline-citation:hover {
 	background: var(--background-modifier-hover);
 	text-decoration: underline;
+}
+
+.gemini-chat-inline-citation-missing {
+	color: var(--text-muted);
+	cursor: default;
+	text-decoration: none;
+	opacity: 0.75;
+}
+
+.gemini-chat-inline-citation-missing:hover {
+	background: var(--background-primary);
+	text-decoration: none;
+}
+
+.gemini-chat-hover-preview {
+	position: fixed;
+	z-index: 1000;
+	padding: 12px;
+	border: 1px solid var(--interactive-accent);
+	border-radius: 8px;
+	background: var(--background-primary);
+	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+	color: var(--text-normal);
+	pointer-events: none;
+}
+
+.gemini-chat-hover-title {
+	font-size: 13px;
+	font-weight: 700;
+	line-height: 1.3;
+	margin-bottom: 4px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gemini-chat-hover-path {
+	font-size: 11px;
+	color: var(--text-muted);
+	margin-bottom: 8px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.gemini-chat-hover-body {
+	margin: 0;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--text-muted);
 }
 
 /* ==================== Input Container ==================== */

@@ -1706,7 +1706,7 @@ ${context}
 
 Instructions:
 1. Answer questions based primarily on the provided notes.
-2. When referencing information from a note, cite it using the format [Source: filename.md].
+2. When referencing information from a note, cite it using the exact full vault path from the note header, using the format [Source: folder/note.md].
 3. If the information is not in the notes, you can provide general knowledge but clearly state that it's not from the notes.
 4. Answer in the same language as the user's latest message.
 5. If the user's latest message is Korean, answer naturally in Korean even when source notes contain English terms or titles.
@@ -1769,7 +1769,7 @@ ${userMessage}`))
     const files = this.plugin.settings.files;
     const contexts = [];
     for (const path in files) {
-      if (files[path].status === "synced") {
+      if (files[path].status === "synced" && this.plugin.isInSyncFolder(path)) {
         try {
           const file = this.plugin.app.vault.getAbstractFileByPath(path);
           if (file && file instanceof import_obsidian2.TFile && file.extension === "md") {
@@ -1792,19 +1792,46 @@ ${truncated}
   }
   extractCitations(text) {
     const citations = [];
-    const pattern = /\[Source:\s*([^\]]+)\]|\[\[([^\]]+)\]\]/g;
+    const pattern = /\[Source:\s*([^\]]+)\]/g;
     let match;
     while ((match = pattern.exec(text)) !== null) {
-      const sourcePath = match[1] || match[2];
+      const sourcePath = this.resolveSyncedCitationPath(match[1] || "");
       if (sourcePath && !citations.find((c) => c.sourcePath === sourcePath)) {
         citations.push({
           sourceId: sourcePath,
-          sourcePath: sourcePath.trim(),
+          sourcePath,
           content: ""
         });
       }
     }
     return citations;
+  }
+  resolveSyncedCitationPath(rawPath) {
+    const cleaned = rawPath.trim().replace(/^["']|["']$/g, "").split("|")[0].trim();
+    if (!cleaned)
+      return null;
+    const candidates = [cleaned];
+    if (!cleaned.endsWith(".md"))
+      candidates.push(`${cleaned}.md`);
+    const normalizedCandidates = new Set(candidates.map((path) => this.normalizeCitationPath(path)));
+    for (const path in this.plugin.settings.files) {
+      if (this.plugin.settings.files[path].status !== "synced")
+        continue;
+      if (!this.plugin.isInSyncFolder(path))
+        continue;
+      const file = this.plugin.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof import_obsidian2.TFile))
+        continue;
+      const normalizedPath = this.normalizeCitationPath(file.path);
+      const normalizedName = this.normalizeCitationPath(file.name);
+      if (normalizedCandidates.has(normalizedPath) || normalizedCandidates.has(normalizedName) || Array.from(normalizedCandidates).some((candidate) => normalizedPath.endsWith(candidate))) {
+        return file.path;
+      }
+    }
+    return null;
+  }
+  normalizeCitationPath(path) {
+    return path.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
   }
   clearChatHistory() {
     this.chatHistory = [];
@@ -2078,6 +2105,9 @@ var SyncEngine = class {
     let pending = 0;
     let error = 0;
     for (const path in files) {
+      const file = this.plugin.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof import_obsidian3.TFile) || !this.plugin.isInSyncFolder(path))
+        continue;
       const status = files[path].status;
       if (status === "synced")
         synced++;
@@ -2124,6 +2154,7 @@ var ChatView = class extends import_obsidian4.ItemView {
     this.isComposing = false;
     this.syncStatusEl = null;
     this.welcomeEl = null;
+    this.hoverPreviewEl = null;
     this.activeTab = "chat";
     this.plugin = plugin;
   }
@@ -2159,6 +2190,7 @@ var ChatView = class extends import_obsidian4.ItemView {
     this.renderActiveTab();
   }
   async onClose() {
+    this.hideCitationHoverPreview();
   }
   // Public method to update sync status - can be called from outside
   updateSyncStatus() {
@@ -2521,15 +2553,24 @@ var ChatView = class extends import_obsidian4.ItemView {
           fragments.push(text.slice(lastIndex, match.index));
         }
         const sourcePath = match[1];
+        const file = this.resolveCitationFile(sourcePath);
         const link = document.createElement("a");
-        link.className = "gemini-chat-inline-citation";
-        link.textContent = `\u{1F4C4} ${sourcePath}`;
-        link.href = "#";
-        link.addEventListener("click", (e) => {
-          e.preventDefault();
-          this.openNote(sourcePath);
-        });
-        fragments.push(link);
+        if (file) {
+          link.className = "gemini-chat-inline-citation";
+          link.textContent = `\u{1F4C4} ${file.basename}`;
+          link.href = "#";
+          link.addEventListener("click", (e) => {
+            e.preventDefault();
+            this.openNote(file.path);
+          });
+          this.attachCitationHoverPreview(link, file);
+          fragments.push(link);
+        } else {
+          const missing = document.createElement("span");
+          missing.className = "gemini-chat-inline-citation gemini-chat-inline-citation-missing";
+          missing.textContent = `\u{1F4C4} ${sourcePath}`;
+          fragments.push(missing);
+        }
         lastIndex = match.index + match[0].length;
       }
       if (lastIndex < text.length) {
@@ -2553,12 +2594,12 @@ var ChatView = class extends import_obsidian4.ItemView {
     if (!cleanPath.endsWith(".md")) {
       cleanPath += ".md";
     }
-    const file = this.app.vault.getAbstractFileByPath(cleanPath);
+    const file = this.resolveCitationFile(cleanPath);
     if (file instanceof import_obsidian4.TFile) {
-      await this.app.workspace.openLinkText(cleanPath, "", true);
+      await this.app.workspace.openLinkText(file.path, "", true);
     } else {
       const fileName = cleanPath.split("/").pop() || cleanPath;
-      const files = this.app.vault.getMarkdownFiles();
+      const files = this.getSyncedMarkdownFiles();
       const matchingFile = files.find(
         (f) => f.name === fileName || f.path.endsWith(cleanPath)
       );
@@ -2573,6 +2614,8 @@ var ChatView = class extends import_obsidian4.ItemView {
     const card = container.createDiv({ cls: "gemini-chat-citation-card" });
     const file = this.resolveCitationFile(citation.sourcePath);
     const title = (file == null ? void 0 : file.basename) || this.getCitationTitle(citation.sourcePath);
+    if (file)
+      this.attachCitationHoverPreview(card, file);
     const header = card.createDiv({ cls: "gemini-chat-citation-header" });
     header.createEl("div", { cls: "gemini-chat-citation-title", text: title });
     header.createEl("div", {
@@ -2597,21 +2640,88 @@ var ChatView = class extends import_obsidian4.ItemView {
       excerptEl.setText("Preview could not be loaded.");
     });
   }
+  attachCitationHoverPreview(target, file) {
+    const show = () => {
+      this.showCitationHoverPreview(target, file);
+    };
+    const hide = () => {
+      this.hideCitationHoverPreview();
+    };
+    target.addEventListener("mouseenter", show);
+    target.addEventListener("focus", show);
+    target.addEventListener("mouseleave", hide);
+    target.addEventListener("blur", hide);
+  }
+  async showCitationHoverPreview(target, file) {
+    this.hideCitationHoverPreview();
+    const preview = document.body.createDiv({ cls: "gemini-chat-hover-preview" });
+    this.hoverPreviewEl = preview;
+    preview.createEl("div", { cls: "gemini-chat-hover-title", text: file.basename });
+    preview.createEl("div", { cls: "gemini-chat-hover-path", text: file.path });
+    const body = preview.createEl("p", {
+      cls: "gemini-chat-hover-body",
+      text: "Loading preview..."
+    });
+    this.positionHoverPreview(preview, target);
+    try {
+      const content = await this.app.vault.read(file);
+      if (this.hoverPreviewEl !== preview)
+        return;
+      body.setText(this.makeExcerpt(content, 420));
+      this.positionHoverPreview(preview, target);
+    } catch (e) {
+      if (this.hoverPreviewEl === preview)
+        body.setText("Preview could not be loaded.");
+    }
+  }
+  positionHoverPreview(preview, target) {
+    const rect = target.getBoundingClientRect();
+    const margin = 12;
+    const width = Math.min(360, window.innerWidth - margin * 2);
+    preview.style.width = `${width}px`;
+    const measured = preview.getBoundingClientRect();
+    let left = rect.left;
+    let top = rect.bottom + 8;
+    if (left + width > window.innerWidth - margin) {
+      left = window.innerWidth - width - margin;
+    }
+    if (left < margin)
+      left = margin;
+    if (top + measured.height > window.innerHeight - margin) {
+      top = rect.top - measured.height - 8;
+    }
+    if (top < margin)
+      top = margin;
+    preview.style.left = `${left}px`;
+    preview.style.top = `${top}px`;
+  }
+  hideCitationHoverPreview() {
+    var _a;
+    (_a = this.hoverPreviewEl) == null ? void 0 : _a.remove();
+    this.hoverPreviewEl = null;
+  }
   resolveCitationFile(path) {
     const candidates = this.getCitationPathCandidates(path);
     for (const candidate of candidates) {
       const file = this.app.vault.getAbstractFileByPath(candidate);
-      if (file instanceof import_obsidian4.TFile)
+      if (file instanceof import_obsidian4.TFile && this.isSyncedCitationFile(file))
         return file;
     }
     const normalizedCandidates = new Set(candidates.map((candidate) => this.normalizeCitationPath(candidate)));
-    return this.app.vault.getMarkdownFiles().find((file) => {
+    return this.getSyncedMarkdownFiles().find((file) => {
       const normalizedPath = this.normalizeCitationPath(file.path);
       const normalizedName = this.normalizeCitationPath(file.name);
       return normalizedCandidates.has(normalizedPath) || normalizedCandidates.has(normalizedName) || Array.from(normalizedCandidates).some(
         (candidate) => normalizedPath.endsWith(candidate) || normalizedName === candidate
       );
     }) || null;
+  }
+  getSyncedMarkdownFiles() {
+    return this.app.vault.getMarkdownFiles().filter((file) => this.isSyncedCitationFile(file));
+  }
+  isSyncedCitationFile(file) {
+    const syncData = this.plugin.settings.files[file.path];
+    return file.extension === "md" && (syncData == null ? void 0 : syncData.status) === "synced" && this.plugin.isInSyncFolder(file.path);
   }
   getCitationPathCandidates(path) {
     const cleaned = path.trim().replace(/^\[\[/, "").replace(/\]\]$/, "").replace(/^["']|["']$/g, "").split("|")[0].trim();
@@ -2630,11 +2740,11 @@ var ChatView = class extends import_obsidian4.ItemView {
     const cleaned = this.getCitationPathCandidates(path)[0] || path;
     return ((_a = cleaned.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/i, "")) || cleaned;
   }
-  makeExcerpt(content) {
+  makeExcerpt(content, maxLength = 220) {
     const stripped = content.replace(/^---[\s\S]*?---/, "").replace(/```[\s\S]*?```/g, "").replace(/!\[[^\]]*]\([^)]+\)/g, "").replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[#>*_`~-]/g, " ").replace(/\s+/g, " ").trim();
     if (!stripped)
       return "This source note has no previewable text.";
-    return stripped.length > 220 ? `${stripped.slice(0, 220).trim()}...` : stripped;
+    return stripped.length > maxLength ? `${stripped.slice(0, maxLength).trim()}...` : stripped;
   }
   clearChat() {
     if (this.activeTab === "agent") {

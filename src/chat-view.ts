@@ -42,6 +42,7 @@ export class ChatView extends ItemView {
 	private isComposing: boolean = false;
 	private syncStatusEl: HTMLElement | null = null;
 	private welcomeEl: HTMLElement | null = null;
+	private hoverPreviewEl: HTMLElement | null = null;
 	private tabBarEl: HTMLElement;
 	private dashboardContentEl: HTMLElement;
 	private activeTab: DashboardTab = 'chat';
@@ -96,6 +97,7 @@ export class ChatView extends ItemView {
 
 	async onClose() {
 		// Save messages for session persistence (optional)
+		this.hideCitationHoverPreview();
 	}
 
 	// Public method to update sync status - can be called from outside
@@ -539,15 +541,24 @@ export class ChatView extends ItemView {
 
 				// Create clickable link
 				const sourcePath = match[1];
+				const file = this.resolveCitationFile(sourcePath);
 				const link = document.createElement('a');
-				link.className = 'gemini-chat-inline-citation';
-				link.textContent = `📄 ${sourcePath}`;
-				link.href = '#';
-				link.addEventListener('click', (e) => {
-					e.preventDefault();
-					this.openNote(sourcePath);
-				});
-				fragments.push(link);
+				if (file) {
+					link.className = 'gemini-chat-inline-citation';
+					link.textContent = `📄 ${file.basename}`;
+					link.href = '#';
+					link.addEventListener('click', (e) => {
+						e.preventDefault();
+						this.openNote(file.path);
+					});
+					this.attachCitationHoverPreview(link, file);
+					fragments.push(link);
+				} else {
+					const missing = document.createElement('span');
+					missing.className = 'gemini-chat-inline-citation gemini-chat-inline-citation-missing';
+					missing.textContent = `📄 ${sourcePath}`;
+					fragments.push(missing);
+				}
 
 				lastIndex = match.index + match[0].length;
 			}
@@ -581,16 +592,16 @@ export class ChatView extends ItemView {
 			cleanPath += '.md';
 		}
 
-		// Try to find the file in the vault
-		const file = this.app.vault.getAbstractFileByPath(cleanPath);
+		// Try to find the file in the synced knowledge scope.
+		const file = this.resolveCitationFile(cleanPath);
 
 		if (file instanceof TFile) {
 			// Open the file
-			await this.app.workspace.openLinkText(cleanPath, '', true);
+			await this.app.workspace.openLinkText(file.path, '', true);
 		} else {
 			// Try to find by name only (without path)
 			const fileName = cleanPath.split('/').pop() || cleanPath;
-			const files = this.app.vault.getMarkdownFiles();
+			const files = this.getSyncedMarkdownFiles();
 			const matchingFile = files.find(f =>
 				f.name === fileName || f.path.endsWith(cleanPath)
 			);
@@ -607,6 +618,7 @@ export class ChatView extends ItemView {
 		const card = container.createDiv({ cls: 'gemini-chat-citation-card' });
 		const file = this.resolveCitationFile(citation.sourcePath);
 		const title = file?.basename || this.getCitationTitle(citation.sourcePath);
+		if (file) this.attachCitationHoverPreview(card, file);
 
 		const header = card.createDiv({ cls: 'gemini-chat-citation-header' });
 		header.createEl('div', { cls: 'gemini-chat-citation-title', text: title });
@@ -638,15 +650,79 @@ export class ChatView extends ItemView {
 			});
 	}
 
+	private attachCitationHoverPreview(target: HTMLElement, file: TFile) {
+		const show = () => {
+			this.showCitationHoverPreview(target, file);
+		};
+		const hide = () => {
+			this.hideCitationHoverPreview();
+		};
+
+		target.addEventListener('mouseenter', show);
+		target.addEventListener('focus', show);
+		target.addEventListener('mouseleave', hide);
+		target.addEventListener('blur', hide);
+	}
+
+	private async showCitationHoverPreview(target: HTMLElement, file: TFile) {
+		this.hideCitationHoverPreview();
+
+		const preview = document.body.createDiv({ cls: 'gemini-chat-hover-preview' });
+		this.hoverPreviewEl = preview;
+		preview.createEl('div', { cls: 'gemini-chat-hover-title', text: file.basename });
+		preview.createEl('div', { cls: 'gemini-chat-hover-path', text: file.path });
+		const body = preview.createEl('p', {
+			cls: 'gemini-chat-hover-body',
+			text: 'Loading preview...'
+		});
+		this.positionHoverPreview(preview, target);
+
+		try {
+			const content = await this.app.vault.read(file);
+			if (this.hoverPreviewEl !== preview) return;
+			body.setText(this.makeExcerpt(content, 420));
+			this.positionHoverPreview(preview, target);
+		} catch {
+			if (this.hoverPreviewEl === preview) body.setText('Preview could not be loaded.');
+		}
+	}
+
+	private positionHoverPreview(preview: HTMLElement, target: HTMLElement) {
+		const rect = target.getBoundingClientRect();
+		const margin = 12;
+		const width = Math.min(360, window.innerWidth - margin * 2);
+		preview.style.width = `${width}px`;
+
+		const measured = preview.getBoundingClientRect();
+		let left = rect.left;
+		let top = rect.bottom + 8;
+		if (left + width > window.innerWidth - margin) {
+			left = window.innerWidth - width - margin;
+		}
+		if (left < margin) left = margin;
+		if (top + measured.height > window.innerHeight - margin) {
+			top = rect.top - measured.height - 8;
+		}
+		if (top < margin) top = margin;
+
+		preview.style.left = `${left}px`;
+		preview.style.top = `${top}px`;
+	}
+
+	private hideCitationHoverPreview() {
+		this.hoverPreviewEl?.remove();
+		this.hoverPreviewEl = null;
+	}
+
 	private resolveCitationFile(path: string): TFile | null {
 		const candidates = this.getCitationPathCandidates(path);
 		for (const candidate of candidates) {
 			const file = this.app.vault.getAbstractFileByPath(candidate);
-			if (file instanceof TFile) return file;
+			if (file instanceof TFile && this.isSyncedCitationFile(file)) return file;
 		}
 
 		const normalizedCandidates = new Set(candidates.map(candidate => this.normalizeCitationPath(candidate)));
-		return this.app.vault.getMarkdownFiles().find(file => {
+		return this.getSyncedMarkdownFiles().find(file => {
 			const normalizedPath = this.normalizeCitationPath(file.path);
 			const normalizedName = this.normalizeCitationPath(file.name);
 			return normalizedCandidates.has(normalizedPath) ||
@@ -655,6 +731,17 @@ export class ChatView extends ItemView {
 					normalizedPath.endsWith(candidate) || normalizedName === candidate
 				);
 		}) || null;
+	}
+
+	private getSyncedMarkdownFiles(): TFile[] {
+		return this.app.vault.getMarkdownFiles().filter(file => this.isSyncedCitationFile(file));
+	}
+
+	private isSyncedCitationFile(file: TFile): boolean {
+		const syncData = this.plugin.settings.files[file.path];
+		return file.extension === 'md' &&
+			syncData?.status === 'synced' &&
+			this.plugin.isInSyncFolder(file.path);
 	}
 
 	private getCitationPathCandidates(path: string): string[] {
@@ -680,7 +767,7 @@ export class ChatView extends ItemView {
 		return cleaned.split('/').pop()?.replace(/\.md$/i, '') || cleaned;
 	}
 
-	private makeExcerpt(content: string): string {
+	private makeExcerpt(content: string, maxLength: number = 220): string {
 		const stripped = content
 			.replace(/^---[\s\S]*?---/, '')
 			.replace(/```[\s\S]*?```/g, '')
@@ -691,7 +778,7 @@ export class ChatView extends ItemView {
 			.replace(/\s+/g, ' ')
 			.trim();
 		if (!stripped) return 'This source note has no previewable text.';
-		return stripped.length > 220 ? `${stripped.slice(0, 220).trim()}...` : stripped;
+		return stripped.length > maxLength ? `${stripped.slice(0, maxLength).trim()}...` : stripped;
 	}
 
 	private clearChat() {
