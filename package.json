@@ -1,6 +1,6 @@
 {
 	"name": "master-of-knowledge",
-	"version": "1.3.0",
+	"version": "2.0.0",
 	"description": "Obsidian knowledge workspace powered by Gemini File Search and local agents",
 	"main": "main.js",
 	"scripts": {
@@ -15,7 +15,7 @@
 		"ai",
 		"rag"
 	],
-	"author": "",
+	"author": "김문정",
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^16.11.6",

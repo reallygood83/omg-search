@@ -1,7 +1,7 @@
 {
-	"id": "obsidian-gemini-sync",
+	"id": "master-of-knowledge",
 	"name": "Master of Knowledge",
-	"version": "1.3.0",
+	"version": "2.0.0",
 	"minAppVersion": "1.0.0",
 	"description": "Turn your Obsidian vault into a Gemini File Search and Agent-powered knowledge workspace",
 	"author": "김문정",

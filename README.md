@@ -45,9 +45,11 @@ Turn your Obsidian vault into a Gemini File Search and Agent-powered knowledge w
 
 ### Manual
 1. Download the latest release (`main.js`, `manifest.json`, `styles.css`)
-2. Create a folder `.obsidian/plugins/obsidian-gemini-sync` in your vault
+2. Create a folder `.obsidian/plugins/master-of-knowledge` in your vault
 3. Copy the downloaded files into the folder
 4. Enable the plugin in Obsidian settings
+
+> Note: version `2.0.0` changes the plugin ID to `master-of-knowledge` for official Obsidian Community Plugin submission compatibility. If you installed an older BRAT build under `obsidian-gemini-sync`, install this release into the new folder name and copy your settings if needed.
 
 ## Setup
 
@@ -138,7 +140,7 @@ npm run build
 
 ## License
 
-MIT License
+MIT
 
 ## Credits
 
