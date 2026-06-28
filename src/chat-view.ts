@@ -370,18 +370,56 @@ export class ChatView extends ItemView {
 		// Scroll to bottom
 		this.scrollToBottom();
 
+		let streamingMessage: ChatMessage | null = null;
+		let streamedContent = '';
+		let lastStreamRender = 0;
+		if (requestTab === 'agent') {
+			streamingMessage = {
+				role: 'model',
+				content: 'Agent is starting...',
+				isStreaming: true,
+				citations: [{
+					sourceId: 'agent-workspace',
+					sourcePath: `${this.plugin.settings.workspaceFolder}/agent`,
+					content: ''
+				}]
+			};
+			list.push(streamingMessage);
+			if (this.activeTab === requestTab) this.renderActiveTab();
+		}
+
 		try {
 			const response = requestTab === 'agent'
-				? await this.runAgentMessage(text)
+				? await this.runAgentMessage(text, (chunk, stream) => {
+					if (!streamingMessage || stream !== 'stdout') return;
+					streamedContent += chunk;
+					streamingMessage.content = streamedContent.trim() || 'Agent is running...';
+					const now = Date.now();
+					if (this.activeTab === requestTab && now - lastStreamRender > 350) {
+						lastStreamRender = now;
+						this.renderActiveTab();
+					}
+				})
 				: await this.plugin.geminiService.chat(text);
 
-			list.push(response);
+			if (streamingMessage) {
+				streamingMessage.content = response.content;
+				streamingMessage.citations = response.citations;
+				streamingMessage.isStreaming = false;
+			} else {
+				list.push(response);
+			}
 		} catch (error) {
 			const errorMessage: ChatMessage = {
 				role: 'model',
 				content: `Error: ${error instanceof Error ? error.message : 'Failed to get response'}`
 			};
-			list.push(errorMessage);
+			if (streamingMessage) {
+				streamingMessage.content = errorMessage.content;
+				streamingMessage.isStreaming = false;
+			} else {
+				list.push(errorMessage);
+			}
 		} finally {
 			if (loadingTimer !== null) window.clearInterval(loadingTimer);
 			loadingEl.remove();
@@ -394,8 +432,11 @@ export class ChatView extends ItemView {
 		}
 	}
 
-	private async runAgentMessage(text: string): Promise<ChatMessage> {
-		const result = await this.plugin.agentService.run(text);
+	private async runAgentMessage(
+		text: string,
+		onChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void
+	): Promise<ChatMessage> {
+		const result = await this.plugin.agentService.run(text, onChunk);
 		const sourcePath = `${this.plugin.settings.workspaceFolder}/agent`;
 		return {
 			role: 'model',
@@ -452,7 +493,7 @@ export class ChatView extends ItemView {
 		}
 
 		// Add Apply/Copy buttons for model responses
-		if (message.role === 'model') {
+		if (message.role === 'model' && !message.isStreaming) {
 			this.renderActionButtons(contentWrapper, message);
 		}
 

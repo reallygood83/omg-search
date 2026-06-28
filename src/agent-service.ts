@@ -1,5 +1,5 @@
 import { Notice } from 'obsidian';
-import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { delimiter, isAbsolute, join } from 'path';
@@ -15,7 +15,7 @@ export interface AgentRunResult {
 export class AgentService {
 	constructor(private plugin: GeminiSyncPlugin) {}
 
-	async run(prompt: string): Promise<AgentRunResult> {
+	async run(prompt: string, onChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void): Promise<AgentRunResult> {
 		const started = Date.now();
 		const command = this.plugin.settings.agentCliPath.trim() || 'agy';
 		const agentPrompt = this.buildPrompt(prompt);
@@ -29,7 +29,7 @@ export class AgentService {
 					code: 'ENOENT'
 				});
 			}
-			const { stdout, stderr } = await this.exec(resolvedCommand, args);
+			const { stdout, stderr } = await this.exec(resolvedCommand, args, onChunk);
 			const output = [stdout.trim(), stderr.trim() ? `\n\n---\nAgent stderr:\n${stderr.trim()}` : '']
 				.join('')
 				.trim();
@@ -77,29 +77,72 @@ export class AgentService {
 		].join('\n');
 	}
 
-	private exec(command: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+	private exec(
+		command: string,
+		args: string[],
+		onChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void
+	): Promise<{ stdout: string; stderr: string }> {
 		return new Promise((resolve, reject) => {
-			execFile(
-				command,
-				args,
-				{
-					cwd: this.plugin.getVaultPath(),
-					env: {
-						...process.env,
-						...this.parseEnv(this.plugin.settings.agentEnvironment)
-					},
-					shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(command),
-					timeout: Math.max(30_000, this.plugin.settings.agentTimeoutSeconds * 1000),
-					maxBuffer: 1024 * 1024 * 8
+			let stdout = '';
+			let stderr = '';
+			let settled = false;
+			const maxBuffer = 1024 * 1024 * 8;
+			const timeoutMs = Math.max(30_000, this.plugin.settings.agentTimeoutSeconds * 1000);
+			const child = spawn(command, args, {
+				cwd: this.plugin.getVaultPath(),
+				env: {
+					...process.env,
+					...this.parseEnv(this.plugin.settings.agentEnvironment)
 				},
-				(error, stdout, stderr) => {
-					if (error) {
-						reject(Object.assign(error, { stdout, stderr }));
-						return;
-					}
+				shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(command),
+				windowsHide: true
+			});
+
+			const timer = window.setTimeout(() => {
+				settled = true;
+				child.kill();
+				reject(Object.assign(new Error(`Agent timed out after ${Math.round(timeoutMs / 1000)}s`), {
+					code: 'ETIMEDOUT',
+					stdout,
+					stderr
+				}));
+			}, timeoutMs);
+
+			child.stdout?.on('data', (data: Buffer) => {
+				const chunk = data.toString();
+				stdout += chunk;
+				onChunk?.(chunk, 'stdout');
+				if (stdout.length + stderr.length > maxBuffer) child.kill();
+			});
+
+			child.stderr?.on('data', (data: Buffer) => {
+				const chunk = data.toString();
+				stderr += chunk;
+				onChunk?.(chunk, 'stderr');
+				if (stdout.length + stderr.length > maxBuffer) child.kill();
+			});
+
+			child.on('error', (error) => {
+				if (settled) return;
+				settled = true;
+				window.clearTimeout(timer);
+				reject(Object.assign(error, { stdout, stderr }));
+			});
+
+			child.on('close', (code) => {
+				if (settled) return;
+				settled = true;
+				window.clearTimeout(timer);
+				if (code === 0) {
 					resolve({ stdout, stderr });
+					return;
 				}
-			);
+				reject(Object.assign(new Error(`Agent exited with code ${code ?? 'unknown'}`), {
+					code,
+					stdout,
+					stderr
+				}));
+			});
 		});
 	}
 

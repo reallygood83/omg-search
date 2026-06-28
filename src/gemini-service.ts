@@ -22,6 +22,7 @@ export interface ChatMessage {
 	role: 'user' | 'model';
 	content: string;
 	citations?: Citation[];
+	isStreaming?: boolean;
 }
 
 export interface Citation {

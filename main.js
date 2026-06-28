@@ -2381,15 +2381,54 @@ var ChatView = class extends import_obsidian4.ItemView {
       loadingLabel.setText(`Agent running ${seconds}s...`);
     }, 1e3) : null;
     this.scrollToBottom();
+    let streamingMessage = null;
+    let streamedContent = "";
+    let lastStreamRender = 0;
+    if (requestTab === "agent") {
+      streamingMessage = {
+        role: "model",
+        content: "Agent is starting...",
+        isStreaming: true,
+        citations: [{
+          sourceId: "agent-workspace",
+          sourcePath: `${this.plugin.settings.workspaceFolder}/agent`,
+          content: ""
+        }]
+      };
+      list.push(streamingMessage);
+      if (this.activeTab === requestTab)
+        this.renderActiveTab();
+    }
     try {
-      const response = requestTab === "agent" ? await this.runAgentMessage(text) : await this.plugin.geminiService.chat(text);
-      list.push(response);
+      const response = requestTab === "agent" ? await this.runAgentMessage(text, (chunk, stream) => {
+        if (!streamingMessage || stream !== "stdout")
+          return;
+        streamedContent += chunk;
+        streamingMessage.content = streamedContent.trim() || "Agent is running...";
+        const now = Date.now();
+        if (this.activeTab === requestTab && now - lastStreamRender > 350) {
+          lastStreamRender = now;
+          this.renderActiveTab();
+        }
+      }) : await this.plugin.geminiService.chat(text);
+      if (streamingMessage) {
+        streamingMessage.content = response.content;
+        streamingMessage.citations = response.citations;
+        streamingMessage.isStreaming = false;
+      } else {
+        list.push(response);
+      }
     } catch (error) {
       const errorMessage = {
         role: "model",
         content: `Error: ${error instanceof Error ? error.message : "Failed to get response"}`
       };
-      list.push(errorMessage);
+      if (streamingMessage) {
+        streamingMessage.content = errorMessage.content;
+        streamingMessage.isStreaming = false;
+      } else {
+        list.push(errorMessage);
+      }
     } finally {
       if (loadingTimer !== null)
         window.clearInterval(loadingTimer);
@@ -2401,9 +2440,9 @@ var ChatView = class extends import_obsidian4.ItemView {
       }
     }
   }
-  async runAgentMessage(text) {
+  async runAgentMessage(text, onChunk) {
     var _a;
-    const result = await this.plugin.agentService.run(text);
+    const result = await this.plugin.agentService.run(text, onChunk);
     const sourcePath = `${this.plugin.settings.workspaceFolder}/agent`;
     return {
       role: "model",
@@ -2444,7 +2483,7 @@ var ChatView = class extends import_obsidian4.ItemView {
         this.renderCitationPreview(citationsEl, citation);
       }
     }
-    if (message.role === "model") {
+    if (message.role === "model" && !message.isStreaming) {
       this.renderActionButtons(contentWrapper, message);
     }
     this.scrollToBottom();
@@ -2782,7 +2821,7 @@ var AgentService = class {
   constructor(plugin) {
     this.plugin = plugin;
   }
-  async run(prompt) {
+  async run(prompt, onChunk) {
     const started = Date.now();
     const command = this.plugin.settings.agentCliPath.trim() || "agy";
     const agentPrompt = this.buildPrompt(prompt);
@@ -2795,7 +2834,7 @@ var AgentService = class {
           code: "ENOENT"
         });
       }
-      const { stdout, stderr } = await this.exec(resolvedCommand, args);
+      const { stdout, stderr } = await this.exec(resolvedCommand, args, onChunk);
       const output = [stdout.trim(), stderr.trim() ? `
 
 ---
@@ -2842,29 +2881,68 @@ ${message}`,
       prompt
     ].join("\n");
   }
-  exec(command, args) {
+  exec(command, args, onChunk) {
     return new Promise((resolve, reject) => {
-      (0, import_child_process.execFile)(
-        command,
-        args,
-        {
-          cwd: this.plugin.getVaultPath(),
-          env: {
-            ...process.env,
-            ...this.parseEnv(this.plugin.settings.agentEnvironment)
-          },
-          shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(command),
-          timeout: Math.max(3e4, this.plugin.settings.agentTimeoutSeconds * 1e3),
-          maxBuffer: 1024 * 1024 * 8
+      var _a, _b;
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const maxBuffer = 1024 * 1024 * 8;
+      const timeoutMs = Math.max(3e4, this.plugin.settings.agentTimeoutSeconds * 1e3);
+      const child = (0, import_child_process.spawn)(command, args, {
+        cwd: this.plugin.getVaultPath(),
+        env: {
+          ...process.env,
+          ...this.parseEnv(this.plugin.settings.agentEnvironment)
         },
-        (error, stdout, stderr) => {
-          if (error) {
-            reject(Object.assign(error, { stdout, stderr }));
-            return;
-          }
+        shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(command),
+        windowsHide: true
+      });
+      const timer = window.setTimeout(() => {
+        settled = true;
+        child.kill();
+        reject(Object.assign(new Error(`Agent timed out after ${Math.round(timeoutMs / 1e3)}s`), {
+          code: "ETIMEDOUT",
+          stdout,
+          stderr
+        }));
+      }, timeoutMs);
+      (_a = child.stdout) == null ? void 0 : _a.on("data", (data) => {
+        const chunk = data.toString();
+        stdout += chunk;
+        onChunk == null ? void 0 : onChunk(chunk, "stdout");
+        if (stdout.length + stderr.length > maxBuffer)
+          child.kill();
+      });
+      (_b = child.stderr) == null ? void 0 : _b.on("data", (data) => {
+        const chunk = data.toString();
+        stderr += chunk;
+        onChunk == null ? void 0 : onChunk(chunk, "stderr");
+        if (stdout.length + stderr.length > maxBuffer)
+          child.kill();
+      });
+      child.on("error", (error) => {
+        if (settled)
+          return;
+        settled = true;
+        window.clearTimeout(timer);
+        reject(Object.assign(error, { stdout, stderr }));
+      });
+      child.on("close", (code) => {
+        if (settled)
+          return;
+        settled = true;
+        window.clearTimeout(timer);
+        if (code === 0) {
           resolve({ stdout, stderr });
+          return;
         }
-      );
+        reject(Object.assign(new Error(`Agent exited with code ${code != null ? code : "unknown"}`), {
+          code,
+          stdout,
+          stderr
+        }));
+      });
     });
   }
   parseEnv(raw) {
