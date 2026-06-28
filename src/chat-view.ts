@@ -45,6 +45,7 @@ export class ChatView extends ItemView {
 	private tabBarEl: HTMLElement;
 	private dashboardContentEl: HTMLElement;
 	private activeTab: DashboardTab = 'chat';
+	private citationPreviewEl: HTMLElement | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: GeminiSyncPlugin) {
 		super(leaf);
@@ -95,7 +96,7 @@ export class ChatView extends ItemView {
 	}
 
 	async onClose() {
-		// Save messages for session persistence (optional)
+		this.hideCitationPreview();
 	}
 
 	// Public method to update sync status - can be called from outside
@@ -550,6 +551,7 @@ export class ChatView extends ItemView {
 						e.preventDefault();
 						this.openNote(file.path);
 					});
+					this.attachCitationHover(link, file);
 					fragments.push(link);
 				} else {
 					const missing = document.createElement('span');
@@ -625,6 +627,80 @@ export class ChatView extends ItemView {
 			text: 'Find note'
 		});
 		openButton.addEventListener('click', () => this.openNote(citation.sourcePath));
+
+		if (file) {
+			this.attachCitationHover(row, file);
+			row.addEventListener('click', (event) => {
+				if ((event.target as HTMLElement).closest('button')) return;
+				this.openNote(file.path);
+			});
+		}
+	}
+
+	private attachCitationHover(target: HTMLElement, file: TFile) {
+		target.addEventListener('mouseenter', async () => {
+			const preview = await this.buildNotePreview(file);
+			this.showCitationPreview(target, file, preview);
+		});
+		target.addEventListener('mousemove', () => {
+			if (this.citationPreviewEl) {
+				this.positionCitationPreview(target, this.citationPreviewEl);
+			}
+		});
+		target.addEventListener('mouseleave', () => this.hideCitationPreview());
+	}
+
+	private async buildNotePreview(file: TFile): Promise<string> {
+		try {
+			const content = await this.app.vault.read(file);
+			const meaningfulLines = content
+				.split('\n')
+				.map(line => line
+					.replace(/^#{1,6}\s*/, '')
+					.replace(/^[-*]\s+/, '')
+					.replace(/^\d+\.\s+/, '')
+					.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1')
+					.replace(/!\[[^\]]*]\([^)]*\)/g, '')
+					.replace(/\[([^\]]+)]\([^)]*\)/g, '$1')
+					.replace(/[*_`>#]/g, '')
+					.trim()
+				)
+				.filter(line => line.length > 0 && !/^---+$/.test(line))
+				.slice(0, 6);
+			const preview = meaningfulLines.join('\n');
+			return preview.length > 700 ? `${preview.slice(0, 700)}...` : preview || '미리볼 수 있는 내용이 없습니다.';
+		} catch {
+			return '노트 내용을 불러오지 못했습니다.';
+		}
+	}
+
+	private showCitationPreview(target: HTMLElement, file: TFile, preview: string) {
+		this.hideCitationPreview();
+		const previewEl = document.body.createDiv({ cls: 'gemini-chat-note-popover' });
+		previewEl.createDiv({ cls: 'gemini-chat-note-popover-title', text: file.basename });
+		previewEl.createDiv({ cls: 'gemini-chat-note-popover-path', text: file.path });
+		previewEl.createDiv({ cls: 'gemini-chat-note-popover-body', text: preview });
+		this.citationPreviewEl = previewEl;
+		this.positionCitationPreview(target, previewEl);
+	}
+
+	private positionCitationPreview(target: HTMLElement, previewEl: HTMLElement) {
+		const rect = target.getBoundingClientRect();
+		const width = Math.min(360, Math.max(260, window.innerWidth - 32));
+		previewEl.style.width = `${width}px`;
+		const left = Math.min(Math.max(16, rect.left), window.innerWidth - width - 16);
+		const below = rect.bottom + 10;
+		const estimatedHeight = previewEl.offsetHeight || 180;
+		const top = below + estimatedHeight < window.innerHeight
+			? below
+			: Math.max(16, rect.top - estimatedHeight - 10);
+		previewEl.style.left = `${left}px`;
+		previewEl.style.top = `${top}px`;
+	}
+
+	private hideCitationPreview() {
+		this.citationPreviewEl?.remove();
+		this.citationPreviewEl = null;
 	}
 
 	private resolveCitationFile(path: string): TFile | null {

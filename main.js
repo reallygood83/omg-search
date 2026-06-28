@@ -2637,6 +2637,7 @@ var ChatView = class extends import_obsidian4.ItemView {
     this.syncStatusEl = null;
     this.welcomeEl = null;
     this.activeTab = "chat";
+    this.citationPreviewEl = null;
     this.plugin = plugin;
   }
   getViewType() {
@@ -2671,6 +2672,7 @@ var ChatView = class extends import_obsidian4.ItemView {
     this.renderActiveTab();
   }
   async onClose() {
+    this.hideCitationPreview();
   }
   // Public method to update sync status - can be called from outside
   updateSyncStatus() {
@@ -3043,6 +3045,7 @@ var ChatView = class extends import_obsidian4.ItemView {
             e.preventDefault();
             this.openNote(file.path);
           });
+          this.attachCitationHover(link, file);
           fragments.push(link);
         } else {
           const missing = document.createElement("span");
@@ -3100,6 +3103,63 @@ var ChatView = class extends import_obsidian4.ItemView {
       text: "Find note"
     });
     openButton.addEventListener("click", () => this.openNote(citation.sourcePath));
+    if (file) {
+      this.attachCitationHover(row, file);
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("button"))
+          return;
+        this.openNote(file.path);
+      });
+    }
+  }
+  attachCitationHover(target, file) {
+    target.addEventListener("mouseenter", async () => {
+      const preview = await this.buildNotePreview(file);
+      this.showCitationPreview(target, file, preview);
+    });
+    target.addEventListener("mousemove", () => {
+      if (this.citationPreviewEl) {
+        this.positionCitationPreview(target, this.citationPreviewEl);
+      }
+    });
+    target.addEventListener("mouseleave", () => this.hideCitationPreview());
+  }
+  async buildNotePreview(file) {
+    try {
+      const content = await this.app.vault.read(file);
+      const meaningfulLines = content.split("\n").map(
+        (line) => line.replace(/^#{1,6}\s*/, "").replace(/^[-*]\s+/, "").replace(/^\d+\.\s+/, "").replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, "$1").replace(/!\[[^\]]*]\([^)]*\)/g, "").replace(/\[([^\]]+)]\([^)]*\)/g, "$1").replace(/[*_`>#]/g, "").trim()
+      ).filter((line) => line.length > 0 && !/^---+$/.test(line)).slice(0, 6);
+      const preview = meaningfulLines.join("\n");
+      return preview.length > 700 ? `${preview.slice(0, 700)}...` : preview || "\uBBF8\uB9AC\uBCFC \uC218 \uC788\uB294 \uB0B4\uC6A9\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.";
+    } catch (e) {
+      return "\uB178\uD2B8 \uB0B4\uC6A9\uC744 \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.";
+    }
+  }
+  showCitationPreview(target, file, preview) {
+    this.hideCitationPreview();
+    const previewEl = document.body.createDiv({ cls: "gemini-chat-note-popover" });
+    previewEl.createDiv({ cls: "gemini-chat-note-popover-title", text: file.basename });
+    previewEl.createDiv({ cls: "gemini-chat-note-popover-path", text: file.path });
+    previewEl.createDiv({ cls: "gemini-chat-note-popover-body", text: preview });
+    this.citationPreviewEl = previewEl;
+    this.positionCitationPreview(target, previewEl);
+  }
+  positionCitationPreview(target, previewEl) {
+    const rect = target.getBoundingClientRect();
+    const width = Math.min(360, Math.max(260, window.innerWidth - 32));
+    previewEl.style.width = `${width}px`;
+    const left = Math.min(Math.max(16, rect.left), window.innerWidth - width - 16);
+    const below = rect.bottom + 10;
+    const estimatedHeight = previewEl.offsetHeight || 180;
+    const top = below + estimatedHeight < window.innerHeight ? below : Math.max(16, rect.top - estimatedHeight - 10);
+    previewEl.style.left = `${left}px`;
+    previewEl.style.top = `${top}px`;
+  }
+  hideCitationPreview() {
+    var _a;
+    (_a = this.citationPreviewEl) == null ? void 0 : _a.remove();
+    this.citationPreviewEl = null;
   }
   resolveCitationFile(path) {
     const candidates = this.getCitationPathCandidates(path);
