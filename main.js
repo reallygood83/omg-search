@@ -3587,9 +3587,11 @@ ${truncated}
         windowsHide: true
       });
       this.activeChild = child;
+      child.stdin.end();
       void this.appendAgentLog(logPath, {
         event: "spawn",
-        pid: (_a = child.pid) != null ? _a : null
+        pid: (_a = child.pid) != null ? _a : null,
+        stdinClosed: true
       });
       const timer = window.setTimeout(() => {
         settled = true;

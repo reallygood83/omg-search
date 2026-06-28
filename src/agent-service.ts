@@ -220,9 +220,11 @@ export class AgentService {
 				windowsHide: true
 			});
 			this.activeChild = child;
+			child.stdin.end();
 			void this.appendAgentLog(logPath, {
 				event: 'spawn',
-				pid: child.pid ?? null
+				pid: child.pid ?? null,
+				stdinClosed: true
 			});
 
 			const timer = window.setTimeout(() => {
