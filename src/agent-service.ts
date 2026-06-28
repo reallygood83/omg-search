@@ -1,5 +1,5 @@
 import { Notice } from 'obsidian';
-import { spawn } from 'child_process';
+import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { delimiter, isAbsolute, join } from 'path';
@@ -13,7 +13,18 @@ export interface AgentRunResult {
 }
 
 export class AgentService {
+	private activeChild: ChildProcessWithoutNullStreams | null = null;
+	private stopWasRequested = false;
+
 	constructor(private plugin: GeminiSyncPlugin) {}
+
+	stop() {
+		if (!this.activeChild) return false;
+		this.stopWasRequested = true;
+		this.activeChild.kill();
+		this.activeChild = null;
+		return true;
+	}
 
 	async run(prompt: string, onChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void): Promise<AgentRunResult> {
 		const started = Date.now();
@@ -40,6 +51,14 @@ export class AgentService {
 				durationMs: Date.now() - started
 			};
 		} catch (error: any) {
+			if (error?.code === 'EAGENTSTOPPED') {
+				return {
+					content: 'Agent run stopped by user.',
+					command: `${resolvedCommand || command} --print`,
+					exitCode: null,
+					durationMs: Date.now() - started
+				};
+			}
 			const stdout = String(error?.stdout || '').trim();
 			const stderr = String(error?.stderr || '').trim();
 			const message = stderr || stdout || error?.message || 'Unknown agent error';
@@ -97,10 +116,12 @@ export class AgentService {
 				shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(command),
 				windowsHide: true
 			});
+			this.activeChild = child;
 
 			const timer = window.setTimeout(() => {
 				settled = true;
 				child.kill();
+				if (this.activeChild === child) this.activeChild = null;
 				reject(Object.assign(new Error(`Agent timed out after ${Math.round(timeoutMs / 1000)}s`), {
 					code: 'ETIMEDOUT',
 					stdout,
@@ -125,14 +146,34 @@ export class AgentService {
 			child.on('error', (error) => {
 				if (settled) return;
 				settled = true;
+				if (this.activeChild === child) this.activeChild = null;
 				window.clearTimeout(timer);
+				if (this.stopWasRequested) {
+					this.stopWasRequested = false;
+					reject(Object.assign(new Error('Agent run stopped by user.'), {
+						code: 'EAGENTSTOPPED',
+						stdout,
+						stderr
+					}));
+					return;
+				}
 				reject(Object.assign(error, { stdout, stderr }));
 			});
 
 			child.on('close', (code) => {
 				if (settled) return;
 				settled = true;
+				if (this.activeChild === child) this.activeChild = null;
 				window.clearTimeout(timer);
+				if (this.stopWasRequested) {
+					this.stopWasRequested = false;
+					reject(Object.assign(new Error('Agent run stopped by user.'), {
+						code: 'EAGENTSTOPPED',
+						stdout,
+						stderr
+					}));
+					return;
+				}
 				if (code === 0) {
 					resolve({ stdout, stderr });
 					return;

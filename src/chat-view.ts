@@ -211,10 +211,19 @@ export class ChatView extends ItemView {
 
 		this.sendButton = this.inputContainer.createEl('button', {
 			cls: 'gemini-chat-send-btn',
-			text: this.isLoading && this.loadingTab === this.activeTab ? '⏳' : '➤'
+			text: this.isLoading && this.loadingTab === this.activeTab
+				? (this.activeTab === 'agent' ? '■' : '⏳')
+				: '➤'
 		});
-		this.sendButton.disabled = this.isLoading;
-		this.sendButton.addEventListener('click', () => this.sendMessage());
+		this.sendButton.disabled = this.isLoading && this.activeTab !== 'agent';
+		this.sendButton.setAttr('aria-label', this.isLoading && this.activeTab === 'agent' ? 'Stop Agent' : 'Send');
+		this.sendButton.addEventListener('click', () => {
+			if (this.isLoading && this.activeTab === 'agent') {
+				this.stopAgentRun();
+				return;
+			}
+			this.sendMessage();
+		});
 
 		if (this.isLoading && this.loadingTab === this.activeTab) {
 			const loadingEl = this.messagesContainer.createDiv({ cls: 'gemini-chat-loading' });
@@ -350,8 +359,9 @@ export class ChatView extends ItemView {
 		// Show loading
 		this.isLoading = true;
 		this.loadingTab = requestTab;
-		requestButton.disabled = true;
-		requestButton.textContent = '⏳';
+		requestButton.disabled = requestTab !== 'agent';
+		requestButton.textContent = requestTab === 'agent' ? '■' : '⏳';
+		requestButton.setAttr('aria-label', requestTab === 'agent' ? 'Stop Agent' : 'Running');
 
 		const loadingEl = requestContainer.createDiv({ cls: 'gemini-chat-loading' });
 		loadingEl.createEl('span', { cls: 'gemini-chat-loading-dots', text: '●●●' });
@@ -430,6 +440,11 @@ export class ChatView extends ItemView {
 				this.renderActiveTab();
 			}
 		}
+	}
+
+	private stopAgentRun() {
+		const stopped = this.plugin.agentService.stop();
+		new Notice(stopped ? 'Agent run stopped.' : 'No active Agent run to stop.');
 	}
 
 	private async runAgentMessage(

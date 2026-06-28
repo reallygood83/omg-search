@@ -2249,10 +2249,17 @@ var ChatView = class extends import_obsidian4.ItemView {
     });
     this.sendButton = this.inputContainer.createEl("button", {
       cls: "gemini-chat-send-btn",
-      text: this.isLoading && this.loadingTab === this.activeTab ? "\u23F3" : "\u27A4"
+      text: this.isLoading && this.loadingTab === this.activeTab ? this.activeTab === "agent" ? "\u25A0" : "\u23F3" : "\u27A4"
     });
-    this.sendButton.disabled = this.isLoading;
-    this.sendButton.addEventListener("click", () => this.sendMessage());
+    this.sendButton.disabled = this.isLoading && this.activeTab !== "agent";
+    this.sendButton.setAttr("aria-label", this.isLoading && this.activeTab === "agent" ? "Stop Agent" : "Send");
+    this.sendButton.addEventListener("click", () => {
+      if (this.isLoading && this.activeTab === "agent") {
+        this.stopAgentRun();
+        return;
+      }
+      this.sendMessage();
+    });
     if (this.isLoading && this.loadingTab === this.activeTab) {
       const loadingEl = this.messagesContainer.createDiv({ cls: "gemini-chat-loading" });
       loadingEl.createEl("span", { cls: "gemini-chat-loading-dots", text: "\u25CF\u25CF\u25CF" });
@@ -2367,8 +2374,9 @@ var ChatView = class extends import_obsidian4.ItemView {
     requestInput.style.height = "auto";
     this.isLoading = true;
     this.loadingTab = requestTab;
-    requestButton.disabled = true;
-    requestButton.textContent = "\u23F3";
+    requestButton.disabled = requestTab !== "agent";
+    requestButton.textContent = requestTab === "agent" ? "\u25A0" : "\u23F3";
+    requestButton.setAttr("aria-label", requestTab === "agent" ? "Stop Agent" : "Running");
     const loadingEl = requestContainer.createDiv({ cls: "gemini-chat-loading" });
     loadingEl.createEl("span", { cls: "gemini-chat-loading-dots", text: "\u25CF\u25CF\u25CF" });
     const loadingLabel = loadingEl.createEl("span", {
@@ -2439,6 +2447,10 @@ var ChatView = class extends import_obsidian4.ItemView {
         this.renderActiveTab();
       }
     }
+  }
+  stopAgentRun() {
+    const stopped = this.plugin.agentService.stop();
+    new import_obsidian4.Notice(stopped ? "Agent run stopped." : "No active Agent run to stop.");
   }
   async runAgentMessage(text, onChunk) {
     var _a;
@@ -2820,6 +2832,16 @@ var import_path = require("path");
 var AgentService = class {
   constructor(plugin) {
     this.plugin = plugin;
+    this.activeChild = null;
+    this.stopWasRequested = false;
+  }
+  stop() {
+    if (!this.activeChild)
+      return false;
+    this.stopWasRequested = true;
+    this.activeChild.kill();
+    this.activeChild = null;
+    return true;
   }
   async run(prompt, onChunk) {
     const started = Date.now();
@@ -2847,6 +2869,14 @@ ${stderr.trim()}` : ""].join("").trim();
         durationMs: Date.now() - started
       };
     } catch (error) {
+      if ((error == null ? void 0 : error.code) === "EAGENTSTOPPED") {
+        return {
+          content: "Agent run stopped by user.",
+          command: `${resolvedCommand || command} --print`,
+          exitCode: null,
+          durationMs: Date.now() - started
+        };
+      }
       const stdout = String((error == null ? void 0 : error.stdout) || "").trim();
       const stderr = String((error == null ? void 0 : error.stderr) || "").trim();
       const message = stderr || stdout || (error == null ? void 0 : error.message) || "Unknown agent error";
@@ -2898,9 +2928,12 @@ ${message}`,
         shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(command),
         windowsHide: true
       });
+      this.activeChild = child;
       const timer = window.setTimeout(() => {
         settled = true;
         child.kill();
+        if (this.activeChild === child)
+          this.activeChild = null;
         reject(Object.assign(new Error(`Agent timed out after ${Math.round(timeoutMs / 1e3)}s`), {
           code: "ETIMEDOUT",
           stdout,
@@ -2925,14 +2958,36 @@ ${message}`,
         if (settled)
           return;
         settled = true;
+        if (this.activeChild === child)
+          this.activeChild = null;
         window.clearTimeout(timer);
+        if (this.stopWasRequested) {
+          this.stopWasRequested = false;
+          reject(Object.assign(new Error("Agent run stopped by user."), {
+            code: "EAGENTSTOPPED",
+            stdout,
+            stderr
+          }));
+          return;
+        }
         reject(Object.assign(error, { stdout, stderr }));
       });
       child.on("close", (code) => {
         if (settled)
           return;
         settled = true;
+        if (this.activeChild === child)
+          this.activeChild = null;
         window.clearTimeout(timer);
+        if (this.stopWasRequested) {
+          this.stopWasRequested = false;
+          reject(Object.assign(new Error("Agent run stopped by user."), {
+            code: "EAGENTSTOPPED",
+            stdout,
+            stderr
+          }));
+          return;
+        }
         if (code === 0) {
           resolve({ stdout, stderr });
           return;

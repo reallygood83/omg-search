@@ -1,7 +1,7 @@
 {
 	"id": "master-of-knowledge",
 	"name": "Master of Knowledge",
-	"version": "2.0.9",
+	"version": "2.0.10",
 	"minAppVersion": "1.0.0",
 	"description": "Turn your vault into a Gemini File Search and Agent-powered knowledge workspace.",
 	"author": "김문정",
