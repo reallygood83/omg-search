@@ -3008,9 +3008,9 @@ var AgentService = class {
   async run(prompt, onChunk) {
     const started = Date.now();
     const command = this.plugin.settings.agentCliPath.trim() || "agy";
-    const agentPrompt = this.buildPrompt(prompt);
+    const agentPrompt = await this.buildPrompt(prompt);
     const timeoutSeconds = Math.max(30, this.plugin.settings.agentTimeoutSeconds || 60);
-    const args = ["--print-timeout", `${timeoutSeconds}s`, "--print", agentPrompt];
+    const args = this.buildArgs(agentPrompt, timeoutSeconds);
     const resolvedCommand = this.resolveCommand(command);
     try {
       if (!resolvedCommand) {
@@ -3053,19 +3053,45 @@ ${message}`,
       };
     }
   }
-  buildPrompt(prompt) {
+  buildArgs(agentPrompt, timeoutSeconds) {
+    const args = [
+      "--add-dir",
+      this.plugin.getVaultPath(),
+      "--print-timeout",
+      `${timeoutSeconds}s`
+    ];
+    if (this.plugin.settings.agentPermissionMode === "auto" || this.plugin.settings.agentPermissionMode === "yolo") {
+      args.push("--dangerously-skip-permissions");
+    }
+    args.push("--print", agentPrompt);
+    return args;
+  }
+  async buildPrompt(prompt) {
     const activeFile = this.plugin.app.workspace.getActiveFile();
     const workspaceFolder = this.plugin.settings.workspaceFolder;
     const trustMode = this.plugin.settings.agentPermissionMode;
     const scope = this.plugin.settings.syncFolders.join(", ") || "No sync folders selected";
     const webSearch = this.plugin.settings.agentWebSearchEnabled;
+    let activeNoteContent = "";
+    if (activeFile) {
+      try {
+        const content = await this.plugin.app.vault.read(activeFile);
+        activeNoteContent = content.length > 6e3 ? `${content.slice(0, 6e3)}
+...[active note truncated]` : content;
+      } catch (e) {
+        activeNoteContent = "";
+      }
+    }
     return [
       "You are running inside the Master of Knowledge Obsidian plugin.",
+      `Vault workspace path: ${this.plugin.getVaultPath()}.`,
       `Trust mode: ${trustMode}.`,
       `Web search mode: ${webSearch ? "enabled" : "disabled"}.`,
       `Workspace folder for generated artifacts: ${workspaceFolder}.`,
       `Selected knowledge folders: ${scope}.`,
       activeFile ? `Active note path: ${activeFile.path}.` : "No active note is open.",
+      activeNoteContent ? `Active note content excerpt:
+${activeNoteContent}` : "",
       webSearch ? "Use web search when current external information would improve the answer, and return markdown with clear web and vault sources." : "Do not use web search unless the user explicitly asks for it in the prompt. Prefer vault evidence.",
       "Do not modify user notes directly unless the prompt explicitly asks for it. Prefer a preview-ready result.",
       "",
