@@ -12,6 +12,7 @@ export interface AgentRunResult {
 	durationMs: number;
 	logPath?: string;
 	agyLogPath?: string;
+	contextStats?: AgentContextStats;
 }
 
 interface AgentLogRef {
@@ -20,9 +21,18 @@ interface AgentLogRef {
 	agyAbsolutePath: string;
 }
 
+export interface AgentContextStats {
+	totalSyncedNotes: number;
+	loadedExcerptNotes: number;
+	contextChars: number;
+	truncatedByBudget: boolean;
+	loadedPaths: string[];
+}
+
 export class AgentService {
 	private activeChild: ChildProcessWithoutNullStreams | null = null;
 	private stopWasRequested = false;
+	private lastContextStats: AgentContextStats | null = null;
 
 	constructor(private plugin: GeminiSyncPlugin) {}
 
@@ -70,7 +80,8 @@ export class AgentService {
 				exitCode: 0,
 				durationMs: Date.now() - started,
 				logPath: logRef.vaultPath,
-				agyLogPath: logRef.agyVaultPath
+				agyLogPath: logRef.agyVaultPath,
+				contextStats: this.lastContextStats || undefined
 			};
 		} catch (error: any) {
 			if (error?.code === 'EAGENTSTOPPED') {
@@ -84,7 +95,8 @@ export class AgentService {
 					exitCode: null,
 					durationMs: Date.now() - started,
 					logPath: logRef.vaultPath,
-					agyLogPath: logRef.agyVaultPath
+					agyLogPath: logRef.agyVaultPath,
+					contextStats: this.lastContextStats || undefined
 				};
 			}
 			const stdout = String(error?.stdout || '').trim();
@@ -103,7 +115,8 @@ export class AgentService {
 				exitCode: typeof error?.code === 'number' ? error.code : null,
 				durationMs: Date.now() - started,
 				logPath: logRef.vaultPath,
-				agyLogPath: logRef.agyVaultPath
+				agyLogPath: logRef.agyVaultPath,
+				contextStats: this.lastContextStats || undefined
 			};
 		}
 	}
@@ -133,7 +146,8 @@ export class AgentService {
 		const trustMode = this.plugin.settings.agentPermissionMode;
 		const scope = this.plugin.settings.syncFolders.join(', ') || 'No sync folders selected';
 		const webSearch = this.plugin.settings.agentWebSearchEnabled;
-		const syncedNotesContext = await this.buildSyncedNotesContext();
+		const syncedNotes = await this.buildSyncedNotesContext(prompt);
+		this.lastContextStats = syncedNotes.stats;
 		let activeNoteContent = '';
 		if (activeFile) {
 			try {
@@ -155,8 +169,12 @@ export class AgentService {
 			`Selected knowledge folders: ${scope}.`,
 			activeFile ? `Active note path: ${activeFile.path}.` : 'No active note is open.',
 			activeNoteContent ? `Active note content excerpt:\n${activeNoteContent}` : '',
-			'Synced notes context. Use this as the primary knowledge base and cite note paths when you use them:',
-			syncedNotesContext,
+			`Total synced notes available in selected folders: ${syncedNotes.stats.totalSyncedNotes}.`,
+			`Direct excerpts loaded into this prompt: ${syncedNotes.stats.loadedExcerptNotes}.`,
+			'The excerpts below are a relevance-ranked working set, not the complete knowledge base. Do not describe the total knowledge base as only the excerpt count.',
+			'Use the loaded excerpts first, and use the vault workspace path plus selected knowledge folders when you need to inspect more notes.',
+			'Synced note excerpts loaded for this request. Cite note paths when you use them:',
+			syncedNotes.context,
 			webSearch
 				? 'Use web search when current external information would improve the answer, and return markdown with clear web and vault sources.'
 				: 'Do not use web search unless the user explicitly asks for it in the prompt. Prefer vault evidence.',
@@ -168,34 +186,107 @@ export class AgentService {
 		].join('\n');
 	}
 
-	private async buildSyncedNotesContext(): Promise<string> {
+	private async buildSyncedNotesContext(prompt: string): Promise<{ context: string; stats: AgentContextStats }> {
 		const contexts: string[] = [];
 		let totalLength = 0;
 		const maxTotalLength = 24000;
+		const candidates = await this.getRankedSyncedFiles(prompt);
+		let truncatedByBudget = false;
 
-		for (const path in this.plugin.settings.files) {
-			const syncData = this.plugin.settings.files[path];
-			if (syncData.status !== 'synced') continue;
-			if (!this.plugin.isInSyncFolder(path)) continue;
-
-			const file = this.plugin.app.vault.getAbstractFileByPath(path);
-			if (!(file instanceof TFile) || file.extension !== 'md') continue;
-
+		for (const file of candidates) {
 			try {
 				const content = await this.plugin.app.vault.read(file);
 				const truncated = content.length > 1800
 					? `${content.slice(0, 1800)}...[truncated]`
 					: content;
 				const block = `--- ${file.path} ---\n${truncated}\n`;
-				if (totalLength + block.length > maxTotalLength) break;
+				if (totalLength + block.length > maxTotalLength) {
+					truncatedByBudget = true;
+					break;
+				}
 				contexts.push(block);
 				totalLength += block.length;
 			} catch (error) {
-				console.warn(`Failed to read synced note for Agent context: ${path}`, error);
+				console.warn(`Failed to read synced note for Agent context: ${file.path}`, error);
 			}
 		}
 
-		return contexts.join('\n') || 'No synced notes are available in the selected sync folders.';
+		const stats = {
+			totalSyncedNotes: candidates.length,
+			loadedExcerptNotes: contexts.length,
+			contextChars: totalLength,
+			truncatedByBudget,
+			loadedPaths: contexts
+				.map(block => block.match(/^--- (.+?) ---/)?.[1])
+				.filter((path): path is string => !!path)
+		};
+
+		return {
+			context: contexts.join('\n') || 'No synced notes are available in the selected sync folders.',
+			stats
+		};
+	}
+
+	private async getRankedSyncedFiles(prompt: string): Promise<TFile[]> {
+		const files = this.getSyncedMarkdownFiles();
+		const tokens = this.tokenize(prompt);
+		if (tokens.length === 0) return files;
+
+		const scored: { file: TFile; score: number }[] = [];
+		for (const file of files) {
+			try {
+				const content = await this.plugin.app.vault.read(file);
+				const haystack = `${file.basename}\n${file.path}\n${content.slice(0, 4000)}`.toLowerCase();
+				let score = 0;
+				for (const token of tokens) {
+					if (file.basename.toLowerCase().includes(token)) score += 10;
+					if (file.path.toLowerCase().includes(token)) score += 6;
+					score += Math.min(haystack.split(token).length - 1, 8);
+				}
+				scored.push({ file, score });
+			} catch {
+				scored.push({ file, score: 0 });
+			}
+		}
+
+		return scored
+			.sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path))
+			.map(item => item.file);
+	}
+
+	private getSyncedMarkdownFiles(): TFile[] {
+		const files: TFile[] = [];
+		for (const path in this.plugin.settings.files) {
+			const syncData = this.plugin.settings.files[path];
+			if (syncData.status !== 'synced') continue;
+			if (!this.plugin.isInSyncFolder(path)) continue;
+
+			const file = this.plugin.app.vault.getAbstractFileByPath(path);
+			if (file instanceof TFile && file.extension === 'md') {
+				files.push(file);
+			}
+		}
+		return files;
+	}
+
+	private tokenize(text: string): string[] {
+		const stopTokens = new Set([
+			'the', 'and', 'for', 'with', 'from', 'that', 'this', 'you', 'your',
+			'are', 'was', 'were', 'have', 'has', 'not', 'can', 'will',
+			'대한', '관련', '작성', '내용', '노트', '활용', '사용자', '초안',
+			'있습니다', '합니다', '위한', '에게', '에서', '으로', '그리고'
+		]);
+		const normalized = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ');
+		const tokens = new Set<string>();
+		for (const raw of normalized.split(/\s+/)) {
+			const token = raw.trim();
+			if (token.length < 2) continue;
+			if (/^\d+$/.test(token)) continue;
+			if (stopTokens.has(token)) continue;
+			tokens.add(token);
+			if (tokens.size >= 32) break;
+		}
+		return Array.from(tokens);
 	}
 
 	private exec(
@@ -336,6 +427,7 @@ export class AgentService {
 			permissionMode: this.plugin.settings.agentPermissionMode,
 			webSearchEnabled: this.plugin.settings.agentWebSearchEnabled,
 			syncFolders: this.plugin.settings.syncFolders,
+			contextStats: this.lastContextStats,
 			promptPreview: prompt.length > 500 ? `${prompt.slice(0, 500)}...[truncated]` : prompt,
 			agyLogPath: agyVaultPath
 		};

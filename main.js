@@ -2967,12 +2967,18 @@ var ChatView = class extends import_obsidian4.ItemView {
   async runAgentMessage(text, onChunk) {
     var _a;
     const result = await this.plugin.agentService.run(text, onChunk);
+    const contextLine = result.contextStats ? [
+      `Knowledge context: ${result.contextStats.totalSyncedNotes} synced notes available; `,
+      `${result.contextStats.loadedExcerptNotes} relevant note excerpts loaded into this Agent run`,
+      result.contextStats.truncatedByBudget ? " (trimmed to fit the Agent prompt)." : "."
+    ].join("") : "";
     return {
       role: "model",
       content: [
         result.content,
         "",
         "---",
+        contextLine,
         `Agent command: \`${result.command}\``,
         `Duration: ${(result.durationMs / 1e3).toFixed(1)}s`,
         result.logPath ? `Agent log: [[${result.logPath}]]` : "",
@@ -3402,6 +3408,7 @@ var AgentService = class {
     this.plugin = plugin;
     this.activeChild = null;
     this.stopWasRequested = false;
+    this.lastContextStats = null;
   }
   stop() {
     if (!this.activeChild)
@@ -3449,7 +3456,8 @@ ${stderr.trim()}` : ""].join("").trim();
         exitCode: 0,
         durationMs: Date.now() - started,
         logPath: logRef.vaultPath,
-        agyLogPath: logRef.agyVaultPath
+        agyLogPath: logRef.agyVaultPath,
+        contextStats: this.lastContextStats || void 0
       };
     } catch (error) {
       if ((error == null ? void 0 : error.code) === "EAGENTSTOPPED") {
@@ -3463,7 +3471,8 @@ ${stderr.trim()}` : ""].join("").trim();
           exitCode: null,
           durationMs: Date.now() - started,
           logPath: logRef.vaultPath,
-          agyLogPath: logRef.agyVaultPath
+          agyLogPath: logRef.agyVaultPath,
+          contextStats: this.lastContextStats || void 0
         };
       }
       const stdout = String((error == null ? void 0 : error.stdout) || "").trim();
@@ -3484,7 +3493,8 @@ ${message}`,
         exitCode: typeof (error == null ? void 0 : error.code) === "number" ? error.code : null,
         durationMs: Date.now() - started,
         logPath: logRef.vaultPath,
-        agyLogPath: logRef.agyVaultPath
+        agyLogPath: logRef.agyVaultPath,
+        contextStats: this.lastContextStats || void 0
       };
     }
   }
@@ -3509,7 +3519,8 @@ ${message}`,
     const trustMode = this.plugin.settings.agentPermissionMode;
     const scope = this.plugin.settings.syncFolders.join(", ") || "No sync folders selected";
     const webSearch = this.plugin.settings.agentWebSearchEnabled;
-    const syncedNotesContext = await this.buildSyncedNotesContext();
+    const syncedNotes = await this.buildSyncedNotesContext(prompt);
+    this.lastContextStats = syncedNotes.stats;
     let activeNoteContent = "";
     if (activeFile) {
       try {
@@ -3530,8 +3541,12 @@ ${message}`,
       activeFile ? `Active note path: ${activeFile.path}.` : "No active note is open.",
       activeNoteContent ? `Active note content excerpt:
 ${activeNoteContent}` : "",
-      "Synced notes context. Use this as the primary knowledge base and cite note paths when you use them:",
-      syncedNotesContext,
+      `Total synced notes available in selected folders: ${syncedNotes.stats.totalSyncedNotes}.`,
+      `Direct excerpts loaded into this prompt: ${syncedNotes.stats.loadedExcerptNotes}.`,
+      "The excerpts below are a relevance-ranked working set, not the complete knowledge base. Do not describe the total knowledge base as only the excerpt count.",
+      "Use the loaded excerpts first, and use the vault workspace path plus selected knowledge folders when you need to inspect more notes.",
+      "Synced note excerpts loaded for this request. Cite note paths when you use them:",
+      syncedNotes.context,
       webSearch ? "Use web search when current external information would improve the answer, and return markdown with clear web and vault sources." : "Do not use web search unless the user explicitly asks for it in the prompt. Prefer vault evidence.",
       "Answer primarily from the synced notes context. If the answer is not supported by synced notes, say so clearly.",
       "Do not modify user notes directly unless the prompt explicitly asks for it. Prefer a preview-ready result.",
@@ -3540,10 +3555,73 @@ ${activeNoteContent}` : "",
       prompt
     ].join("\n");
   }
-  async buildSyncedNotesContext() {
+  async buildSyncedNotesContext(prompt) {
     const contexts = [];
     let totalLength = 0;
     const maxTotalLength = 24e3;
+    const candidates = await this.getRankedSyncedFiles(prompt);
+    let truncatedByBudget = false;
+    for (const file of candidates) {
+      try {
+        const content = await this.plugin.app.vault.read(file);
+        const truncated = content.length > 1800 ? `${content.slice(0, 1800)}...[truncated]` : content;
+        const block = `--- ${file.path} ---
+${truncated}
+`;
+        if (totalLength + block.length > maxTotalLength) {
+          truncatedByBudget = true;
+          break;
+        }
+        contexts.push(block);
+        totalLength += block.length;
+      } catch (error) {
+        console.warn(`Failed to read synced note for Agent context: ${file.path}`, error);
+      }
+    }
+    const stats = {
+      totalSyncedNotes: candidates.length,
+      loadedExcerptNotes: contexts.length,
+      contextChars: totalLength,
+      truncatedByBudget,
+      loadedPaths: contexts.map((block) => {
+        var _a;
+        return (_a = block.match(/^--- (.+?) ---/)) == null ? void 0 : _a[1];
+      }).filter((path) => !!path)
+    };
+    return {
+      context: contexts.join("\n") || "No synced notes are available in the selected sync folders.",
+      stats
+    };
+  }
+  async getRankedSyncedFiles(prompt) {
+    const files = this.getSyncedMarkdownFiles();
+    const tokens = this.tokenize(prompt);
+    if (tokens.length === 0)
+      return files;
+    const scored = [];
+    for (const file of files) {
+      try {
+        const content = await this.plugin.app.vault.read(file);
+        const haystack = `${file.basename}
+${file.path}
+${content.slice(0, 4e3)}`.toLowerCase();
+        let score = 0;
+        for (const token of tokens) {
+          if (file.basename.toLowerCase().includes(token))
+            score += 10;
+          if (file.path.toLowerCase().includes(token))
+            score += 6;
+          score += Math.min(haystack.split(token).length - 1, 8);
+        }
+        scored.push({ file, score });
+      } catch (e) {
+        scored.push({ file, score: 0 });
+      }
+    }
+    return scored.sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path)).map((item) => item.file);
+  }
+  getSyncedMarkdownFiles() {
+    const files = [];
     for (const path in this.plugin.settings.files) {
       const syncData = this.plugin.settings.files[path];
       if (syncData.status !== "synced")
@@ -3551,23 +3629,62 @@ ${activeNoteContent}` : "",
       if (!this.plugin.isInSyncFolder(path))
         continue;
       const file = this.plugin.app.vault.getAbstractFileByPath(path);
-      if (!(file instanceof import_obsidian5.TFile) || file.extension !== "md")
-        continue;
-      try {
-        const content = await this.plugin.app.vault.read(file);
-        const truncated = content.length > 1800 ? `${content.slice(0, 1800)}...[truncated]` : content;
-        const block = `--- ${file.path} ---
-${truncated}
-`;
-        if (totalLength + block.length > maxTotalLength)
-          break;
-        contexts.push(block);
-        totalLength += block.length;
-      } catch (error) {
-        console.warn(`Failed to read synced note for Agent context: ${path}`, error);
+      if (file instanceof import_obsidian5.TFile && file.extension === "md") {
+        files.push(file);
       }
     }
-    return contexts.join("\n") || "No synced notes are available in the selected sync folders.";
+    return files;
+  }
+  tokenize(text) {
+    const stopTokens = /* @__PURE__ */ new Set([
+      "the",
+      "and",
+      "for",
+      "with",
+      "from",
+      "that",
+      "this",
+      "you",
+      "your",
+      "are",
+      "was",
+      "were",
+      "have",
+      "has",
+      "not",
+      "can",
+      "will",
+      "\uB300\uD55C",
+      "\uAD00\uB828",
+      "\uC791\uC131",
+      "\uB0B4\uC6A9",
+      "\uB178\uD2B8",
+      "\uD65C\uC6A9",
+      "\uC0AC\uC6A9\uC790",
+      "\uCD08\uC548",
+      "\uC788\uC2B5\uB2C8\uB2E4",
+      "\uD569\uB2C8\uB2E4",
+      "\uC704\uD55C",
+      "\uC5D0\uAC8C",
+      "\uC5D0\uC11C",
+      "\uC73C\uB85C",
+      "\uADF8\uB9AC\uACE0"
+    ]);
+    const normalized = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ");
+    const tokens = /* @__PURE__ */ new Set();
+    for (const raw of normalized.split(/\s+/)) {
+      const token = raw.trim();
+      if (token.length < 2)
+        continue;
+      if (/^\d+$/.test(token))
+        continue;
+      if (stopTokens.has(token))
+        continue;
+      tokens.add(token);
+      if (tokens.size >= 32)
+        break;
+    }
+    return Array.from(tokens);
   }
   exec(command, args, logPath, onChunk) {
     return new Promise((resolve, reject) => {
@@ -3702,6 +3819,7 @@ ${truncated}
       permissionMode: this.plugin.settings.agentPermissionMode,
       webSearchEnabled: this.plugin.settings.agentWebSearchEnabled,
       syncFolders: this.plugin.settings.syncFolders,
+      contextStats: this.lastContextStats,
       promptPreview: prompt.length > 500 ? `${prompt.slice(0, 500)}...[truncated]` : prompt,
       agyLogPath: agyVaultPath
     };

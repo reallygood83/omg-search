@@ -448,12 +448,20 @@ export class ChatView extends ItemView {
 		onChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void
 	): Promise<ChatMessage> {
 		const result = await this.plugin.agentService.run(text, onChunk);
+		const contextLine = result.contextStats
+			? [
+				`Knowledge context: ${result.contextStats.totalSyncedNotes} synced notes available; `,
+				`${result.contextStats.loadedExcerptNotes} relevant note excerpts loaded into this Agent run`,
+				result.contextStats.truncatedByBudget ? ' (trimmed to fit the Agent prompt).' : '.'
+			].join('')
+			: '';
 		return {
 			role: 'model',
 			content: [
 				result.content,
 				'',
 				'---',
+				contextLine,
 				`Agent command: \`${result.command}\``,
 				`Duration: ${(result.durationMs / 1000).toFixed(1)}s`,
 				result.logPath ? `Agent log: [[${result.logPath}]]` : '',
