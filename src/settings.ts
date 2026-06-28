@@ -13,6 +13,13 @@ export interface GeminiSyncSettings {
 	model: string;
 	syncFolders: string[];
 	syncFolder?: string; // Legacy setting migrated on load.
+	workspaceFolder: string;
+	monthlyBudgetUsd: number;
+	estimatedMonthlySpendUsd: number;
+	agentCliPath: string;
+	agentPermissionMode: 'review' | 'auto' | 'yolo';
+	agentTimeoutSeconds: number;
+	agentEnvironment: string;
 	corpusName: string;
 	corpusDisplayName: string;
 	autoSync: boolean;
@@ -26,6 +33,13 @@ export const DEFAULT_SETTINGS: GeminiSyncSettings = {
 	apiKey: '',
 	model: 'gemini-2.5-flash',
 	syncFolders: [],
+	workspaceFolder: '_omg',
+	monthlyBudgetUsd: 7,
+	estimatedMonthlySpendUsd: 0,
+	agentCliPath: 'agy',
+	agentPermissionMode: 'review',
+	agentTimeoutSeconds: 180,
+	agentEnvironment: '',
 	corpusName: '',
 	corpusDisplayName: 'Obsidian Vault',
 	autoSync: true,
@@ -47,7 +61,7 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl('h1', { text: 'Gemini Sync Settings' });
+		containerEl.createEl('h1', { text: 'Master of Knowledge Settings' });
 
 		// API Key Section
 		containerEl.createEl('h2', { text: 'API Configuration' });
@@ -145,6 +159,78 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.corpusDisplayName = value;
 					await this.plugin.saveSettings();
+				})
+			);
+
+		containerEl.createEl('h2', { text: 'Workspace & Budget' });
+
+		new Setting(containerEl)
+			.setName('Workspace Folder')
+			.setDesc('Generated agent reports, compiled notes, graphs, and logs are saved under this vault folder.')
+			.addText(text => text
+				.setPlaceholder('_omg')
+				.setValue(this.plugin.settings.workspaceFolder)
+				.onChange(async (value) => {
+					this.plugin.settings.workspaceFolder = value.trim() || '_omg';
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Monthly Budget (USD)')
+			.setDesc('Soft guardrail shown in the dashboard before larger Gemini or Agent workflows.')
+			.addText(text => text
+				.setPlaceholder('7')
+				.setValue(String(this.plugin.settings.monthlyBudgetUsd))
+				.onChange(async (value) => {
+					const num = parseFloat(value);
+					if (!isNaN(num) && num >= 0) {
+						this.plugin.settings.monthlyBudgetUsd = num;
+						await this.plugin.saveSettings();
+					}
+				})
+			);
+
+		containerEl.createEl('h2', { text: 'Agent Workspace' });
+
+		new Setting(containerEl)
+			.setName('Antigravity CLI Path')
+			.setDesc('Path or command used by the Agent tab. Defaults to agy.')
+			.addText(text => text
+				.setPlaceholder('agy')
+				.setValue(this.plugin.settings.agentCliPath)
+				.onChange(async (value) => {
+					this.plugin.settings.agentCliPath = value.trim() || 'agy';
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Agent Permission Mode')
+			.setDesc('Review is preview-first. Auto and Yolo are reserved for trusted vault workflows.')
+			.addDropdown(dropdown => {
+				dropdown.addOption('review', 'Safe / Review');
+				dropdown.addOption('auto', 'Auto');
+				dropdown.addOption('yolo', 'Yolo');
+				dropdown.setValue(this.plugin.settings.agentPermissionMode);
+				dropdown.onChange(async (value: 'review' | 'auto' | 'yolo') => {
+					this.plugin.settings.agentPermissionMode = value;
+					await this.plugin.saveSettings();
+				});
+			});
+
+		new Setting(containerEl)
+			.setName('Agent Timeout (seconds)')
+			.setDesc('Maximum time to wait for a single agent run.')
+			.addText(text => text
+				.setPlaceholder('180')
+				.setValue(String(this.plugin.settings.agentTimeoutSeconds))
+				.onChange(async (value) => {
+					const num = parseInt(value);
+					if (!isNaN(num) && num >= 30) {
+						this.plugin.settings.agentTimeoutSeconds = num;
+						await this.plugin.saveSettings();
+					}
 				})
 			);
 
@@ -248,7 +334,7 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 
 		const helpEl = containerEl.createDiv({ cls: 'gemini-sync-help' });
 		helpEl.createEl('p', {
-			text: 'This plugin syncs your Obsidian notes with Google Gemini\'s File Search API, enabling you to chat with your notes using AI.'
+			text: 'Master of Knowledge combines Gemini File Search, an Obsidian-native dashboard, and optional Antigravity agent workflows.'
 		});
 		helpEl.createEl('p', {
 			text: '⚠️ Note: Using this plugin may incur costs on your Google Cloud account depending on usage.'

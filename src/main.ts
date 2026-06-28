@@ -3,15 +3,17 @@ import { GeminiSyncSettings, DEFAULT_SETTINGS, GeminiSyncSettingTab } from './se
 import { GeminiService } from './gemini-service';
 import { SyncEngine } from './sync-engine';
 import { ChatView, CHAT_VIEW_TYPE } from './chat-view';
+import { AgentService } from './agent-service';
 
 export default class GeminiSyncPlugin extends Plugin {
 	settings: GeminiSyncSettings;
 	geminiService: GeminiService;
 	syncEngine: SyncEngine;
+	agentService: AgentService;
 	statusBarItem: HTMLElement;
 
 	async onload() {
-		console.log('Loading Gemini Sync Plugin');
+		console.log('Loading Master of Knowledge Plugin');
 
 		// Load settings
 		await this.loadSettings();
@@ -19,6 +21,7 @@ export default class GeminiSyncPlugin extends Plugin {
 		// Initialize services
 		this.geminiService = new GeminiService(this);
 		this.syncEngine = new SyncEngine(this, this.geminiService);
+		this.agentService = new AgentService(this);
 
 		// Register chat view
 		this.registerView(
@@ -27,7 +30,7 @@ export default class GeminiSyncPlugin extends Plugin {
 		);
 
 		// Add ribbon icon for chat
-		this.addRibbonIcon('message-square', 'Open Gemini Chat', () => {
+		this.addRibbonIcon('brain-circuit', 'Open Master of Knowledge', () => {
 			this.activateChatView();
 		});
 
@@ -45,7 +48,7 @@ export default class GeminiSyncPlugin extends Plugin {
 		// Add command to open chat
 		this.addCommand({
 			id: 'open-gemini-chat',
-			name: 'Open Gemini Chat',
+			name: 'Open Master of Knowledge',
 			callback: () => {
 				this.activateChatView();
 			}
@@ -74,7 +77,7 @@ export default class GeminiSyncPlugin extends Plugin {
 	}
 
 	onunload() {
-		console.log('Unloading Gemini Sync Plugin');
+		console.log('Unloading Master of Knowledge Plugin');
 	}
 
 	async loadSettings() {
@@ -87,6 +90,13 @@ export default class GeminiSyncPlugin extends Plugin {
 			...configuredFolders
 		].filter(folder => folder.trim().length > 0))).sort();
 		delete this.settings.syncFolder;
+		this.settings.workspaceFolder = this.normalizeFolder(this.settings.workspaceFolder || DEFAULT_SETTINGS.workspaceFolder);
+		this.settings.monthlyBudgetUsd = Number.isFinite(this.settings.monthlyBudgetUsd) ? this.settings.monthlyBudgetUsd : DEFAULT_SETTINGS.monthlyBudgetUsd;
+		this.settings.estimatedMonthlySpendUsd = Number.isFinite(this.settings.estimatedMonthlySpendUsd) ? this.settings.estimatedMonthlySpendUsd : DEFAULT_SETTINGS.estimatedMonthlySpendUsd;
+		this.settings.agentCliPath = this.settings.agentCliPath || DEFAULT_SETTINGS.agentCliPath;
+		this.settings.agentPermissionMode = this.settings.agentPermissionMode || DEFAULT_SETTINGS.agentPermissionMode;
+		this.settings.agentTimeoutSeconds = this.settings.agentTimeoutSeconds || DEFAULT_SETTINGS.agentTimeoutSeconds;
+		this.settings.agentEnvironment = this.settings.agentEnvironment || DEFAULT_SETTINGS.agentEnvironment;
 	}
 
 	async saveSettings() {
@@ -166,7 +176,30 @@ export default class GeminiSyncPlugin extends Plugin {
 	}
 
 	updateStatusBar(status: string) {
-		this.statusBarItem.setText(`Gemini: ${status}`);
+		this.statusBarItem.setText(`MoK: ${status}`);
+	}
+
+	getVaultPath(): string {
+		const adapter = this.app.vault.adapter as { basePath?: string };
+		return adapter.basePath || '/';
+	}
+
+	normalizeFolder(folder: string): string {
+		return (folder || '_omg').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') || '_omg';
+	}
+
+	async ensureWorkspaceFolder(subfolder?: string): Promise<string> {
+		const root = this.normalizeFolder(this.settings.workspaceFolder);
+		const path = subfolder ? `${root}/${subfolder}` : root;
+		const parts = path.split('/');
+		let current = '';
+		for (const part of parts) {
+			current = current ? `${current}/${part}` : part;
+			if (!this.app.vault.getAbstractFileByPath(current)) {
+				await this.app.vault.createFolder(current);
+			}
+		}
+		return path;
 	}
 
 	async activateChatView() {

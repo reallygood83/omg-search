@@ -27,7 +27,7 @@ __export(main_exports, {
   default: () => GeminiSyncPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
@@ -35,6 +35,13 @@ var DEFAULT_SETTINGS = {
   apiKey: "",
   model: "gemini-2.5-flash",
   syncFolders: [],
+  workspaceFolder: "_omg",
+  monthlyBudgetUsd: 7,
+  estimatedMonthlySpendUsd: 0,
+  agentCliPath: "agy",
+  agentPermissionMode: "review",
+  agentTimeoutSeconds: 180,
+  agentEnvironment: "",
   corpusName: "",
   corpusDisplayName: "Obsidian Vault",
   autoSync: true,
@@ -51,7 +58,7 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h1", { text: "Gemini Sync Settings" });
+    containerEl.createEl("h1", { text: "Master of Knowledge Settings" });
     containerEl.createEl("h2", { text: "API Configuration" });
     new import_obsidian.Setting(containerEl).setName("Gemini API Key").setDesc("Enter your Google Gemini API key. Get one from Google AI Studio.").addText(
       (text) => text.setPlaceholder("Enter your API key").setValue(this.plugin.settings.apiKey ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" : "").onChange(async (value) => {
@@ -118,6 +125,48 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    containerEl.createEl("h2", { text: "Workspace & Budget" });
+    new import_obsidian.Setting(containerEl).setName("Workspace Folder").setDesc("Generated agent reports, compiled notes, graphs, and logs are saved under this vault folder.").addText(
+      (text) => text.setPlaceholder("_omg").setValue(this.plugin.settings.workspaceFolder).onChange(async (value) => {
+        this.plugin.settings.workspaceFolder = value.trim() || "_omg";
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Monthly Budget (USD)").setDesc("Soft guardrail shown in the dashboard before larger Gemini or Agent workflows.").addText(
+      (text) => text.setPlaceholder("7").setValue(String(this.plugin.settings.monthlyBudgetUsd)).onChange(async (value) => {
+        const num = parseFloat(value);
+        if (!isNaN(num) && num >= 0) {
+          this.plugin.settings.monthlyBudgetUsd = num;
+          await this.plugin.saveSettings();
+        }
+      })
+    );
+    containerEl.createEl("h2", { text: "Agent Workspace" });
+    new import_obsidian.Setting(containerEl).setName("Antigravity CLI Path").setDesc("Path or command used by the Agent tab. Defaults to agy.").addText(
+      (text) => text.setPlaceholder("agy").setValue(this.plugin.settings.agentCliPath).onChange(async (value) => {
+        this.plugin.settings.agentCliPath = value.trim() || "agy";
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Agent Permission Mode").setDesc("Review is preview-first. Auto and Yolo are reserved for trusted vault workflows.").addDropdown((dropdown) => {
+      dropdown.addOption("review", "Safe / Review");
+      dropdown.addOption("auto", "Auto");
+      dropdown.addOption("yolo", "Yolo");
+      dropdown.setValue(this.plugin.settings.agentPermissionMode);
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.agentPermissionMode = value;
+        await this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Agent Timeout (seconds)").setDesc("Maximum time to wait for a single agent run.").addText(
+      (text) => text.setPlaceholder("180").setValue(String(this.plugin.settings.agentTimeoutSeconds)).onChange(async (value) => {
+        const num = parseInt(value);
+        if (!isNaN(num) && num >= 30) {
+          this.plugin.settings.agentTimeoutSeconds = num;
+          await this.plugin.saveSettings();
+        }
+      })
+    );
     new import_obsidian.Setting(containerEl).setName("Auto Sync").setDesc("Automatically sync files when they are created, modified, or deleted.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.autoSync).onChange(async (value) => {
         this.plugin.settings.autoSync = value;
@@ -181,7 +230,7 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.createEl("h2", { text: "Help" });
     const helpEl = containerEl.createDiv({ cls: "gemini-sync-help" });
     helpEl.createEl("p", {
-      text: "This plugin syncs your Obsidian notes with Google Gemini's File Search API, enabling you to chat with your notes using AI."
+      text: "Master of Knowledge combines Gemini File Search, an Obsidian-native dashboard, and optional Antigravity agent workflows."
     });
     helpEl.createEl("p", {
       text: "\u26A0\uFE0F Note: Using this plugin may incur costs on your Google Cloud account depending on usage."
@@ -2001,27 +2050,29 @@ var ChatView = class extends import_obsidian4.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.messages = [];
+    this.agentMessages = [];
     this.isLoading = false;
     this.isComposing = false;
     this.syncStatusEl = null;
     this.welcomeEl = null;
+    this.activeTab = "chat";
     this.plugin = plugin;
   }
   getViewType() {
     return CHAT_VIEW_TYPE;
   }
   getDisplayText() {
-    return "Gemini Chat";
+    return "Master of Knowledge";
   }
   getIcon() {
-    return "message-square";
+    return "brain-circuit";
   }
   async onOpen() {
     const container = this.containerEl.children[1];
     container.empty();
     container.addClass("gemini-chat-container");
     const header = container.createDiv({ cls: "gemini-chat-header" });
-    header.createEl("h4", { text: "\u{1F4AC} Chat with your Notes" });
+    header.createEl("h4", { text: "Master of Knowledge" });
     const headerActions = header.createDiv({ cls: "gemini-chat-header-actions" });
     const clearBtn = headerActions.createEl("button", {
       cls: "gemini-chat-clear-btn",
@@ -2033,43 +2084,10 @@ var ChatView = class extends import_obsidian4.ItemView {
       cls: "gemini-chat-sync-status",
       text: `\u{1F4DA} ${stats.synced} notes synced`
     });
-    this.messagesContainer = container.createDiv({ cls: "gemini-chat-messages" });
-    if (this.messages.length === 0) {
-      this.showWelcomeMessage();
-    } else {
-      for (const msg of this.messages) {
-        this.renderMessage(msg);
-      }
-    }
-    this.inputContainer = container.createDiv({ cls: "gemini-chat-input-container" });
-    this.inputEl = this.inputContainer.createEl("textarea", {
-      cls: "gemini-chat-input",
-      placeholder: "Ask about your notes..."
-    });
-    this.inputEl.addEventListener("compositionstart", () => {
-      this.isComposing = true;
-    });
-    this.inputEl.addEventListener("compositionend", () => {
-      this.isComposing = false;
-    });
-    this.inputEl.addEventListener("keydown", (e) => {
-      if (this.isComposing || e.isComposing) {
-        return;
-      }
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        this.sendMessage();
-      }
-    });
-    this.inputEl.addEventListener("input", () => {
-      this.inputEl.style.height = "auto";
-      this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 150) + "px";
-    });
-    this.sendButton = this.inputContainer.createEl("button", {
-      cls: "gemini-chat-send-btn",
-      text: "\u27A4"
-    });
-    this.sendButton.addEventListener("click", () => this.sendMessage());
+    this.tabBarEl = container.createDiv({ cls: "mok-tabs" });
+    this.dashboardContentEl = container.createDiv({ cls: "mok-content" });
+    this.renderTabs();
+    this.renderActiveTab();
   }
   async onClose() {
   }
@@ -2096,11 +2114,108 @@ var ChatView = class extends import_obsidian4.ItemView {
       }
     }
   }
+  renderTabs() {
+    this.tabBarEl.empty();
+    const tabs = [
+      { id: "chat", label: "Chat" },
+      { id: "agent", label: "Agent" },
+      { id: "budget", label: "Budget" },
+      { id: "workspace", label: "_omg" }
+    ];
+    for (const tab of tabs) {
+      const button = this.tabBarEl.createEl("button", {
+        cls: tab.id === this.activeTab ? "mok-tab mok-tab-active" : "mok-tab",
+        text: tab.label
+      });
+      button.addEventListener("click", () => {
+        this.activeTab = tab.id;
+        this.renderTabs();
+        this.renderActiveTab();
+      });
+    }
+  }
+  renderActiveTab() {
+    this.dashboardContentEl.empty();
+    this.welcomeEl = null;
+    if (this.activeTab === "budget") {
+      this.renderBudgetTab();
+      return;
+    }
+    if (this.activeTab === "workspace") {
+      this.renderWorkspaceTab();
+      return;
+    }
+    this.messagesContainer = this.dashboardContentEl.createDiv({ cls: "gemini-chat-messages" });
+    const list = this.activeTab === "agent" ? this.agentMessages : this.messages;
+    if (list.length === 0) {
+      this.showWelcomeMessage();
+    } else {
+      for (const msg of list)
+        this.renderMessage(msg);
+    }
+    this.inputContainer = this.dashboardContentEl.createDiv({ cls: "gemini-chat-input-container" });
+    this.inputEl = this.inputContainer.createEl("textarea", {
+      cls: "gemini-chat-input",
+      placeholder: this.activeTab === "agent" ? "Ask the Agent to research, compile, map, or write..." : "Ask about your notes..."
+    });
+    this.inputEl.addEventListener("compositionstart", () => {
+      this.isComposing = true;
+    });
+    this.inputEl.addEventListener("compositionend", () => {
+      window.setTimeout(() => {
+        this.isComposing = false;
+      }, 0);
+    });
+    this.inputEl.addEventListener("keydown", (e) => {
+      if (this.isComposing || e.isComposing || e.keyCode === 229)
+        return;
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        this.sendMessage();
+      }
+    });
+    this.inputEl.addEventListener("input", () => {
+      this.inputEl.style.height = "auto";
+      this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 150) + "px";
+    });
+    this.sendButton = this.inputContainer.createEl("button", {
+      cls: "gemini-chat-send-btn",
+      text: "\u27A4"
+    });
+    this.sendButton.addEventListener("click", () => this.sendMessage());
+  }
+  renderBudgetTab() {
+    const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel" });
+    panel.createEl("h3", { text: "Budget Guard" });
+    const budget = this.plugin.settings.monthlyBudgetUsd;
+    const used = this.plugin.settings.estimatedMonthlySpendUsd;
+    const pct = budget > 0 ? Math.min(100, Math.round(used / budget * 100)) : 0;
+    panel.createEl("p", { text: `Estimated month-to-date usage: $${used.toFixed(2)} / $${budget.toFixed(2)} (${pct}%)` });
+    const meter = panel.createDiv({ cls: "mok-budget-meter" });
+    meter.createDiv({ cls: "mok-budget-fill" }).style.width = `${pct}%`;
+    panel.createEl("p", { text: "Default policy: Flash-Lite for classification, Flash for answers, Pro only after manual approval." });
+    panel.createEl("p", { text: "Next iteration: connect live token accounting per File Search retrieval and Agent run." });
+  }
+  renderWorkspaceTab() {
+    const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel" });
+    panel.createEl("h3", { text: `${this.plugin.settings.workspaceFolder} workspace` });
+    panel.createEl("p", { text: "Generated Agent reports, compiled notes, graph JSON, and logs are kept separate from your source notes." });
+    const folders = ["compiled", "agent", "graph", "inbox", "logs"];
+    const list = panel.createEl("ul");
+    for (const folder of folders)
+      list.createEl("li", { text: `${this.plugin.settings.workspaceFolder}/${folder}` });
+    const createBtn = panel.createEl("button", { cls: "gemini-chat-action-btn", text: "Create workspace folders" });
+    createBtn.addEventListener("click", async () => {
+      for (const folder of folders)
+        await this.plugin.ensureWorkspaceFolder(folder);
+      new import_obsidian4.Notice("Master of Knowledge workspace folders are ready.");
+    });
+  }
   showWelcomeMessage() {
     this.welcomeEl = this.messagesContainer.createDiv({ cls: "gemini-chat-welcome" });
-    this.welcomeEl.createEl("div", { cls: "gemini-chat-welcome-icon", text: "\u{1F916}" });
-    this.welcomeEl.createEl("h3", { text: "Welcome to Gemini Chat!" });
-    this.welcomeEl.createEl("p", { text: "Ask questions about your synced notes. I'll help you find information and provide insights based on your personal knowledge base." });
+    this.welcomeEl.createEl("div", { cls: "gemini-chat-welcome-icon", text: this.activeTab === "agent" ? "\u{1F9ED}" : "\u{1F9E0}" });
+    this.welcomeEl.createEl("h3", { text: this.activeTab === "agent" ? "Agent Workspace" : "Ask your knowledge base" });
+    this.welcomeEl.createEl("p", { text: this.activeTab === "agent" ? "Run Antigravity/AGY work from Obsidian, then apply the result to notes with the same actions as chat." : "Ask questions about your synced notes. I'll help you find information and provide insights based on your personal knowledge base." });
     const stats = this.plugin.syncEngine.getStats();
     if (stats.synced === 0) {
       this.welcomeEl.createEl("p", {
@@ -2110,7 +2225,11 @@ var ChatView = class extends import_obsidian4.ItemView {
     }
     const examplesEl = this.welcomeEl.createDiv({ cls: "gemini-chat-examples" });
     examplesEl.createEl("p", { text: "Try asking:" });
-    const examples = [
+    const examples = this.activeTab === "agent" ? [
+      "/web-search Research the latest context for this note and return sources",
+      "/compile Turn the current answer into an _omg compiled note",
+      "/map Build a graph JSON from the cited sources"
+    ] : [
       "What are the main topics in my notes?",
       "Summarize my notes about [topic]",
       "Find connections between [topic A] and [topic B]"
@@ -2130,7 +2249,7 @@ var ChatView = class extends import_obsidian4.ItemView {
     const text = this.inputEl.value.trim();
     if (!text || this.isLoading)
       return;
-    if (!this.plugin.settings.apiKey) {
+    if (this.activeTab === "chat" && !this.plugin.settings.apiKey) {
       new import_obsidian4.Notice("Please configure your Gemini API key in settings");
       return;
     }
@@ -2142,7 +2261,8 @@ var ChatView = class extends import_obsidian4.ItemView {
       role: "user",
       content: text
     };
-    this.messages.push(userMessage);
+    const list = this.activeTab === "agent" ? this.agentMessages : this.messages;
+    list.push(userMessage);
     this.renderMessage(userMessage);
     this.inputEl.value = "";
     this.inputEl.style.height = "auto";
@@ -2153,9 +2273,9 @@ var ChatView = class extends import_obsidian4.ItemView {
     loadingEl.createEl("span", { cls: "gemini-chat-loading-dots", text: "\u25CF\u25CF\u25CF" });
     this.scrollToBottom();
     try {
-      const response = await this.plugin.geminiService.chat(text);
+      const response = this.activeTab === "agent" ? await this.runAgentMessage(text) : await this.plugin.geminiService.chat(text);
       loadingEl.remove();
-      this.messages.push(response);
+      list.push(response);
       this.renderMessage(response);
     } catch (error) {
       loadingEl.remove();
@@ -2163,13 +2283,34 @@ var ChatView = class extends import_obsidian4.ItemView {
         role: "model",
         content: `Error: ${error instanceof Error ? error.message : "Failed to get response"}`
       };
-      this.messages.push(errorMessage);
+      list.push(errorMessage);
       this.renderMessage(errorMessage);
     }
     this.isLoading = false;
     this.sendButton.disabled = false;
     this.sendButton.textContent = "\u27A4";
     this.scrollToBottom();
+  }
+  async runAgentMessage(text) {
+    var _a;
+    const result = await this.plugin.agentService.run(text);
+    const sourcePath = `${this.plugin.settings.workspaceFolder}/agent`;
+    return {
+      role: "model",
+      content: [
+        result.content,
+        "",
+        "---",
+        `Agent command: \`${result.command}\``,
+        `Duration: ${(result.durationMs / 1e3).toFixed(1)}s`,
+        result.exitCode === 0 ? "" : `Exit code: ${(_a = result.exitCode) != null ? _a : "unknown"}`
+      ].filter(Boolean).join("\n"),
+      citations: [{
+        sourceId: "agent-workspace",
+        sourcePath,
+        content: ""
+      }]
+    };
   }
   renderMessage(message) {
     const msgEl = this.messagesContainer.createDiv({
@@ -2273,9 +2414,13 @@ var ChatView = class extends import_obsidian4.ItemView {
     }
   }
   clearChat() {
-    this.messages = [];
+    if (this.activeTab === "agent") {
+      this.agentMessages = [];
+    } else {
+      this.messages = [];
+      this.plugin.geminiService.clearChatHistory();
+    }
     this.messagesContainer.empty();
-    this.plugin.geminiService.clearChatHistory();
     this.showWelcomeMessage();
   }
   // Render action buttons (Apply, Copy) for AI responses
@@ -2296,7 +2441,8 @@ var ChatView = class extends import_obsidian4.ItemView {
       { text: "\u{1F4CD} Insert at Cursor", action: () => this.insertAtCursor(message.content, message.citations) },
       { text: "\u{1F4CE} Append to Current Note", action: () => this.appendToCurrentNote(message.content, message.citations) },
       { text: "\u{1F4C4} Create New Note", action: () => this.createNewNote(message.content, message.citations) },
-      { text: "\u{1F4C2} Select Note...", action: () => this.selectNoteToApply(message.content, message.citations) }
+      { text: "\u{1F4C2} Select Note...", action: () => this.selectNoteToApply(message.content, message.citations) },
+      { text: `\u{1F9E0} Save to ${this.plugin.settings.workspaceFolder}`, action: () => this.saveToWorkspace(message.content, message.citations) }
     ];
     for (const item of menuItems) {
       const menuItem = dropdownMenu.createEl("div", {
@@ -2358,10 +2504,11 @@ var ChatView = class extends import_obsidian4.ItemView {
       hour: "2-digit",
       minute: "2-digit"
     });
+    const label = this.activeTab === "agent" ? "Agent Result" : "Gemini Response";
     let result = `
 
 ---
-*\u{1F916} Gemini Response (${dateStr})*
+*\u{1F916} ${label} (${dateStr})*
 
 ${content}`;
     if (citations && citations.length > 0) {
@@ -2373,6 +2520,22 @@ ${content}`;
     }
     result += "\n---\n";
     return result;
+  }
+  async saveToWorkspace(content, citations) {
+    const folder = await this.plugin.ensureWorkspaceFolder(this.activeTab === "agent" ? "agent" : "compiled");
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const timeStr = now.toTimeString().slice(0, 5).replace(":", "-");
+    const fileName = `${folder}/Master of Knowledge ${dateStr} ${timeStr}.md`;
+    const formattedContent = this.formatContentWithMetadata(content, citations);
+    try {
+      const file = await this.app.vault.create(fileName, formattedContent);
+      await this.app.workspace.openLinkText(file.path, "", true);
+      new import_obsidian4.Notice(`\u2705 Saved to ${file.path}`);
+    } catch (error) {
+      new import_obsidian4.Notice("Failed to save workspace note.");
+      console.error("Workspace save error:", error);
+    }
   }
   // Insert at cursor position in active editor
   async insertAtCursor(content, citations) {
@@ -2440,18 +2603,115 @@ ${content}`;
   }
 };
 
+// src/agent-service.ts
+var import_obsidian5 = require("obsidian");
+var import_child_process = require("child_process");
+var AgentService = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+  }
+  async run(prompt) {
+    const started = Date.now();
+    const command = this.plugin.settings.agentCliPath.trim() || "agy";
+    const args = ["--print", this.buildPrompt(prompt)];
+    try {
+      const { stdout, stderr } = await this.exec(command, args);
+      const output = [stdout.trim(), stderr.trim() ? `
+
+---
+Agent stderr:
+${stderr.trim()}` : ""].join("").trim();
+      return {
+        content: output || "Agent completed without text output.",
+        command: `${command} --print`,
+        exitCode: 0,
+        durationMs: Date.now() - started
+      };
+    } catch (error) {
+      const stdout = String((error == null ? void 0 : error.stdout) || "").trim();
+      const stderr = String((error == null ? void 0 : error.stderr) || "").trim();
+      const message = stderr || stdout || (error == null ? void 0 : error.message) || "Unknown agent error";
+      new import_obsidian5.Notice("Agent run failed. Check the result card for details.");
+      return {
+        content: `Agent run failed.
+
+${message}`,
+        command: `${command} --print`,
+        exitCode: typeof (error == null ? void 0 : error.code) === "number" ? error.code : null,
+        durationMs: Date.now() - started
+      };
+    }
+  }
+  buildPrompt(prompt) {
+    const activeFile = this.plugin.app.workspace.getActiveFile();
+    const workspaceFolder = this.plugin.settings.workspaceFolder;
+    const trustMode = this.plugin.settings.agentPermissionMode;
+    const scope = this.plugin.settings.syncFolders.join(", ") || "No sync folders selected";
+    return [
+      "You are running inside the Master of Knowledge Obsidian plugin.",
+      `Trust mode: ${trustMode}.`,
+      `Workspace folder for generated artifacts: ${workspaceFolder}.`,
+      `Selected knowledge folders: ${scope}.`,
+      activeFile ? `Active note path: ${activeFile.path}.` : "No active note is open.",
+      "Return markdown with clear sources when you use web or vault evidence.",
+      "Do not modify user notes directly unless the prompt explicitly asks for it. Prefer a preview-ready result.",
+      "",
+      "User request:",
+      prompt
+    ].join("\n");
+  }
+  exec(command, args) {
+    return new Promise((resolve, reject) => {
+      (0, import_child_process.execFile)(
+        command,
+        args,
+        {
+          cwd: this.plugin.getVaultPath(),
+          env: {
+            ...process.env,
+            ...this.parseEnv(this.plugin.settings.agentEnvironment)
+          },
+          timeout: Math.max(3e4, this.plugin.settings.agentTimeoutSeconds * 1e3),
+          maxBuffer: 1024 * 1024 * 8
+        },
+        (error, stdout, stderr) => {
+          if (error) {
+            reject(Object.assign(error, { stdout, stderr }));
+            return;
+          }
+          resolve({ stdout, stderr });
+        }
+      );
+    });
+  }
+  parseEnv(raw) {
+    const env = {};
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#"))
+        continue;
+      const idx = trimmed.indexOf("=");
+      if (idx <= 0)
+        continue;
+      env[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
+    }
+    return env;
+  }
+};
+
 // src/main.ts
-var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
+var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
   async onload() {
-    console.log("Loading Gemini Sync Plugin");
+    console.log("Loading Master of Knowledge Plugin");
     await this.loadSettings();
     this.geminiService = new GeminiService(this);
     this.syncEngine = new SyncEngine(this, this.geminiService);
+    this.agentService = new AgentService(this);
     this.registerView(
       CHAT_VIEW_TYPE,
       (leaf) => new ChatView(leaf, this)
     );
-    this.addRibbonIcon("message-square", "Open Gemini Chat", () => {
+    this.addRibbonIcon("brain-circuit", "Open Master of Knowledge", () => {
       this.activateChatView();
     });
     this.addSettingTab(new GeminiSyncSettingTab(this.app, this));
@@ -2460,7 +2720,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
     this.registerFileEvents();
     this.addCommand({
       id: "open-gemini-chat",
-      name: "Open Gemini Chat",
+      name: "Open Master of Knowledge",
       callback: () => {
         this.activateChatView();
       }
@@ -2470,7 +2730,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
       name: "Force Sync All Files",
       callback: async () => {
         if (!this.settings.apiKey) {
-          new import_obsidian5.Notice("Please configure your Gemini API key first");
+          new import_obsidian6.Notice("Please configure your Gemini API key first");
           return;
         }
         await this.syncEngine.fullSync();
@@ -2483,7 +2743,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
     }
   }
   onunload() {
-    console.log("Unloading Gemini Sync Plugin");
+    console.log("Unloading Master of Knowledge Plugin");
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -2493,6 +2753,13 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
       ...configuredFolders
     ].filter((folder) => folder.trim().length > 0))).sort();
     delete this.settings.syncFolder;
+    this.settings.workspaceFolder = this.normalizeFolder(this.settings.workspaceFolder || DEFAULT_SETTINGS.workspaceFolder);
+    this.settings.monthlyBudgetUsd = Number.isFinite(this.settings.monthlyBudgetUsd) ? this.settings.monthlyBudgetUsd : DEFAULT_SETTINGS.monthlyBudgetUsd;
+    this.settings.estimatedMonthlySpendUsd = Number.isFinite(this.settings.estimatedMonthlySpendUsd) ? this.settings.estimatedMonthlySpendUsd : DEFAULT_SETTINGS.estimatedMonthlySpendUsd;
+    this.settings.agentCliPath = this.settings.agentCliPath || DEFAULT_SETTINGS.agentCliPath;
+    this.settings.agentPermissionMode = this.settings.agentPermissionMode || DEFAULT_SETTINGS.agentPermissionMode;
+    this.settings.agentTimeoutSeconds = this.settings.agentTimeoutSeconds || DEFAULT_SETTINGS.agentTimeoutSeconds;
+    this.settings.agentEnvironment = this.settings.agentEnvironment || DEFAULT_SETTINGS.agentEnvironment;
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -2511,7 +2778,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
   registerFileEvents() {
     this.registerEvent(
       this.app.vault.on("create", async (file) => {
-        if (this.settings.apiKey && file instanceof import_obsidian5.TFile && this.shouldSync(file)) {
+        if (this.settings.apiKey && file instanceof import_obsidian6.TFile && this.shouldSync(file)) {
           console.log("File created:", file.path);
           await this.syncEngine.handleFileCreate(file);
         }
@@ -2519,7 +2786,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("modify", async (file) => {
-        if (this.settings.apiKey && file instanceof import_obsidian5.TFile && this.shouldSync(file)) {
+        if (this.settings.apiKey && file instanceof import_obsidian6.TFile && this.shouldSync(file)) {
           console.log("File modified:", file.path);
           await this.syncEngine.handleFileModify(file);
         }
@@ -2527,7 +2794,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("delete", async (file) => {
-        if (this.settings.apiKey && file instanceof import_obsidian5.TFile && this.shouldSync(file)) {
+        if (this.settings.apiKey && file instanceof import_obsidian6.TFile && this.shouldSync(file)) {
           console.log("File deleted:", file.path);
           await this.syncEngine.handleFileDelete(file);
         }
@@ -2535,7 +2802,7 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("rename", async (file, oldPath) => {
-        if (file instanceof import_obsidian5.TFile) {
+        if (file instanceof import_obsidian6.TFile) {
           const wasInSyncFolder = this.isInSyncFolder(oldPath);
           const isInSyncFolder = this.shouldSync(file);
           if (this.settings.apiKey && (wasInSyncFolder || isInSyncFolder)) {
@@ -2559,7 +2826,27 @@ var GeminiSyncPlugin = class extends import_obsidian5.Plugin {
     );
   }
   updateStatusBar(status) {
-    this.statusBarItem.setText(`Gemini: ${status}`);
+    this.statusBarItem.setText(`MoK: ${status}`);
+  }
+  getVaultPath() {
+    const adapter = this.app.vault.adapter;
+    return adapter.basePath || "/";
+  }
+  normalizeFolder(folder) {
+    return (folder || "_omg").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "") || "_omg";
+  }
+  async ensureWorkspaceFolder(subfolder) {
+    const root = this.normalizeFolder(this.settings.workspaceFolder);
+    const path = subfolder ? `${root}/${subfolder}` : root;
+    const parts = path.split("/");
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!this.app.vault.getAbstractFileByPath(current)) {
+        await this.app.vault.createFolder(current);
+      }
+    }
+    return path;
   }
   async activateChatView() {
     const { workspace } = this.app;

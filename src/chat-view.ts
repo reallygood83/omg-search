@@ -2,6 +2,8 @@ import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, TFile, Modal, FuzzyS
 import GeminiSyncPlugin from './main';
 import { ChatMessage, Citation } from './gemini-service';
 
+type DashboardTab = 'chat' | 'agent' | 'budget' | 'workspace';
+
 // Modal for selecting a note to apply content
 class NoteSelectorModal extends FuzzySuggestModal<TFile> {
 	private onSelect: (file: TFile) => void;
@@ -34,10 +36,14 @@ export class ChatView extends ItemView {
 	private inputEl: HTMLTextAreaElement;
 	private sendButton: HTMLButtonElement;
 	private messages: ChatMessage[] = [];
+	private agentMessages: ChatMessage[] = [];
 	private isLoading: boolean = false;
 	private isComposing: boolean = false;
 	private syncStatusEl: HTMLElement | null = null;
 	private welcomeEl: HTMLElement | null = null;
+	private tabBarEl: HTMLElement;
+	private dashboardContentEl: HTMLElement;
+	private activeTab: DashboardTab = 'chat';
 
 	constructor(leaf: WorkspaceLeaf, plugin: GeminiSyncPlugin) {
 		super(leaf);
@@ -49,11 +55,11 @@ export class ChatView extends ItemView {
 	}
 
 	getDisplayText(): string {
-		return 'Gemini Chat';
+		return 'Master of Knowledge';
 	}
 
 	getIcon(): string {
-		return 'message-square';
+		return 'brain-circuit';
 	}
 
 	async onOpen() {
@@ -63,7 +69,7 @@ export class ChatView extends ItemView {
 
 		// Header
 		const header = container.createDiv({ cls: 'gemini-chat-header' });
-		header.createEl('h4', { text: '💬 Chat with your Notes' });
+		header.createEl('h4', { text: 'Master of Knowledge' });
 
 		const headerActions = header.createDiv({ cls: 'gemini-chat-header-actions' });
 
@@ -81,56 +87,10 @@ export class ChatView extends ItemView {
 			text: `📚 ${stats.synced} notes synced`
 		});
 
-		// Messages container
-		this.messagesContainer = container.createDiv({ cls: 'gemini-chat-messages' });
-
-		// Welcome message
-		if (this.messages.length === 0) {
-			this.showWelcomeMessage();
-		} else {
-			// Restore previous messages
-			for (const msg of this.messages) {
-				this.renderMessage(msg);
-			}
-		}
-
-		// Input container
-		this.inputContainer = container.createDiv({ cls: 'gemini-chat-input-container' });
-
-		this.inputEl = this.inputContainer.createEl('textarea', {
-			cls: 'gemini-chat-input',
-			placeholder: 'Ask about your notes...'
-		});
-
-		this.inputEl.addEventListener('compositionstart', () => {
-			this.isComposing = true;
-		});
-
-		this.inputEl.addEventListener('compositionend', () => {
-			this.isComposing = false;
-		});
-
-		this.inputEl.addEventListener('keydown', (e) => {
-			if (this.isComposing || e.isComposing) {
-				return;
-			}
-			if (e.key === 'Enter' && !e.shiftKey) {
-				e.preventDefault();
-				this.sendMessage();
-			}
-		});
-
-		// Auto-resize textarea
-		this.inputEl.addEventListener('input', () => {
-			this.inputEl.style.height = 'auto';
-			this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 150) + 'px';
-		});
-
-		this.sendButton = this.inputContainer.createEl('button', {
-			cls: 'gemini-chat-send-btn',
-			text: '➤'
-		});
-		this.sendButton.addEventListener('click', () => this.sendMessage());
+		this.tabBarEl = container.createDiv({ cls: 'mok-tabs' });
+		this.dashboardContentEl = container.createDiv({ cls: 'mok-content' });
+		this.renderTabs();
+		this.renderActiveTab();
 	}
 
 	async onClose() {
@@ -170,11 +130,120 @@ export class ChatView extends ItemView {
 		}
 	}
 
+	private renderTabs() {
+		this.tabBarEl.empty();
+		const tabs: Array<{ id: DashboardTab; label: string }> = [
+			{ id: 'chat', label: 'Chat' },
+			{ id: 'agent', label: 'Agent' },
+			{ id: 'budget', label: 'Budget' },
+			{ id: 'workspace', label: '_omg' }
+		];
+
+		for (const tab of tabs) {
+			const button = this.tabBarEl.createEl('button', {
+				cls: tab.id === this.activeTab ? 'mok-tab mok-tab-active' : 'mok-tab',
+				text: tab.label
+			});
+			button.addEventListener('click', () => {
+				this.activeTab = tab.id;
+				this.renderTabs();
+				this.renderActiveTab();
+			});
+		}
+	}
+
+	private renderActiveTab() {
+		this.dashboardContentEl.empty();
+		this.welcomeEl = null;
+
+		if (this.activeTab === 'budget') {
+			this.renderBudgetTab();
+			return;
+		}
+
+		if (this.activeTab === 'workspace') {
+			this.renderWorkspaceTab();
+			return;
+		}
+
+		this.messagesContainer = this.dashboardContentEl.createDiv({ cls: 'gemini-chat-messages' });
+		const list = this.activeTab === 'agent' ? this.agentMessages : this.messages;
+		if (list.length === 0) {
+			this.showWelcomeMessage();
+		} else {
+			for (const msg of list) this.renderMessage(msg);
+		}
+
+		this.inputContainer = this.dashboardContentEl.createDiv({ cls: 'gemini-chat-input-container' });
+		this.inputEl = this.inputContainer.createEl('textarea', {
+			cls: 'gemini-chat-input',
+			placeholder: this.activeTab === 'agent'
+				? 'Ask the Agent to research, compile, map, or write...'
+				: 'Ask about your notes...'
+		});
+
+		this.inputEl.addEventListener('compositionstart', () => {
+			this.isComposing = true;
+		});
+
+		this.inputEl.addEventListener('compositionend', () => {
+			window.setTimeout(() => {
+				this.isComposing = false;
+			}, 0);
+		});
+
+		this.inputEl.addEventListener('keydown', (e) => {
+			if (this.isComposing || e.isComposing || e.keyCode === 229) return;
+			if (e.key === 'Enter' && !e.shiftKey) {
+				e.preventDefault();
+				this.sendMessage();
+			}
+		});
+
+		this.inputEl.addEventListener('input', () => {
+			this.inputEl.style.height = 'auto';
+			this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 150) + 'px';
+		});
+
+		this.sendButton = this.inputContainer.createEl('button', {
+			cls: 'gemini-chat-send-btn',
+			text: '➤'
+		});
+		this.sendButton.addEventListener('click', () => this.sendMessage());
+	}
+
+	private renderBudgetTab() {
+		const panel = this.dashboardContentEl.createDiv({ cls: 'mok-panel' });
+		panel.createEl('h3', { text: 'Budget Guard' });
+		const budget = this.plugin.settings.monthlyBudgetUsd;
+		const used = this.plugin.settings.estimatedMonthlySpendUsd;
+		const pct = budget > 0 ? Math.min(100, Math.round((used / budget) * 100)) : 0;
+		panel.createEl('p', { text: `Estimated month-to-date usage: $${used.toFixed(2)} / $${budget.toFixed(2)} (${pct}%)` });
+		const meter = panel.createDiv({ cls: 'mok-budget-meter' });
+		meter.createDiv({ cls: 'mok-budget-fill' }).style.width = `${pct}%`;
+		panel.createEl('p', { text: 'Default policy: Flash-Lite for classification, Flash for answers, Pro only after manual approval.' });
+		panel.createEl('p', { text: 'Next iteration: connect live token accounting per File Search retrieval and Agent run.' });
+	}
+
+	private renderWorkspaceTab() {
+		const panel = this.dashboardContentEl.createDiv({ cls: 'mok-panel' });
+		panel.createEl('h3', { text: `${this.plugin.settings.workspaceFolder} workspace` });
+		panel.createEl('p', { text: 'Generated Agent reports, compiled notes, graph JSON, and logs are kept separate from your source notes.' });
+		const folders = ['compiled', 'agent', 'graph', 'inbox', 'logs'];
+		const list = panel.createEl('ul');
+		for (const folder of folders) list.createEl('li', { text: `${this.plugin.settings.workspaceFolder}/${folder}` });
+		const createBtn = panel.createEl('button', { cls: 'gemini-chat-action-btn', text: 'Create workspace folders' });
+		createBtn.addEventListener('click', async () => {
+			for (const folder of folders) await this.plugin.ensureWorkspaceFolder(folder);
+			new Notice('Master of Knowledge workspace folders are ready.');
+		});
+	}
+
 	private showWelcomeMessage() {
 		this.welcomeEl = this.messagesContainer.createDiv({ cls: 'gemini-chat-welcome' });
-		this.welcomeEl.createEl('div', { cls: 'gemini-chat-welcome-icon', text: '🤖' });
-		this.welcomeEl.createEl('h3', { text: 'Welcome to Gemini Chat!' });
-		this.welcomeEl.createEl('p', { text: 'Ask questions about your synced notes. I\'ll help you find information and provide insights based on your personal knowledge base.' });
+		this.welcomeEl.createEl('div', { cls: 'gemini-chat-welcome-icon', text: this.activeTab === 'agent' ? '🧭' : '🧠' });
+		this.welcomeEl.createEl('h3', { text: this.activeTab === 'agent' ? 'Agent Workspace' : 'Ask your knowledge base' });
+		this.welcomeEl.createEl('p', { text: this.activeTab === 'agent' ? 'Run Antigravity/AGY work from Obsidian, then apply the result to notes with the same actions as chat.' : 'Ask questions about your synced notes. I\'ll help you find information and provide insights based on your personal knowledge base.' });
 
 		const stats = this.plugin.syncEngine.getStats();
 		if (stats.synced === 0) {
@@ -188,11 +257,17 @@ export class ChatView extends ItemView {
 		const examplesEl = this.welcomeEl.createDiv({ cls: 'gemini-chat-examples' });
 		examplesEl.createEl('p', { text: 'Try asking:' });
 
-		const examples = [
-			'What are the main topics in my notes?',
-			'Summarize my notes about [topic]',
-			'Find connections between [topic A] and [topic B]'
-		];
+		const examples = this.activeTab === 'agent'
+			? [
+				'/web-search Research the latest context for this note and return sources',
+				'/compile Turn the current answer into an _omg compiled note',
+				'/map Build a graph JSON from the cited sources'
+			]
+			: [
+				'What are the main topics in my notes?',
+				'Summarize my notes about [topic]',
+				'Find connections between [topic A] and [topic B]'
+			];
 
 		for (const example of examples) {
 			const exampleBtn = examplesEl.createEl('button', {
@@ -210,8 +285,7 @@ export class ChatView extends ItemView {
 		const text = this.inputEl.value.trim();
 		if (!text || this.isLoading) return;
 
-		// Check API key
-		if (!this.plugin.settings.apiKey) {
+		if (this.activeTab === 'chat' && !this.plugin.settings.apiKey) {
 			new Notice('Please configure your Gemini API key in settings');
 			return;
 		}
@@ -227,7 +301,8 @@ export class ChatView extends ItemView {
 			role: 'user',
 			content: text
 		};
-		this.messages.push(userMessage);
+		const list = this.activeTab === 'agent' ? this.agentMessages : this.messages;
+		list.push(userMessage);
 		this.renderMessage(userMessage);
 
 		// Clear input
@@ -246,14 +321,15 @@ export class ChatView extends ItemView {
 		this.scrollToBottom();
 
 		try {
-			// Get response from Gemini
-			const response = await this.plugin.geminiService.chat(text);
+			const response = this.activeTab === 'agent'
+				? await this.runAgentMessage(text)
+				: await this.plugin.geminiService.chat(text);
 
 			// Remove loading
 			loadingEl.remove();
 
 			// Add response
-			this.messages.push(response);
+			list.push(response);
 			this.renderMessage(response);
 
 		} catch (error) {
@@ -263,7 +339,7 @@ export class ChatView extends ItemView {
 				role: 'model',
 				content: `Error: ${error instanceof Error ? error.message : 'Failed to get response'}`
 			};
-			this.messages.push(errorMessage);
+			list.push(errorMessage);
 			this.renderMessage(errorMessage);
 		}
 
@@ -273,6 +349,27 @@ export class ChatView extends ItemView {
 		this.sendButton.textContent = '➤';
 
 		this.scrollToBottom();
+	}
+
+	private async runAgentMessage(text: string): Promise<ChatMessage> {
+		const result = await this.plugin.agentService.run(text);
+		const sourcePath = `${this.plugin.settings.workspaceFolder}/agent`;
+		return {
+			role: 'model',
+			content: [
+				result.content,
+				'',
+				'---',
+				`Agent command: \`${result.command}\``,
+				`Duration: ${(result.durationMs / 1000).toFixed(1)}s`,
+				result.exitCode === 0 ? '' : `Exit code: ${result.exitCode ?? 'unknown'}`
+			].filter(Boolean).join('\n'),
+			citations: [{
+				sourceId: 'agent-workspace',
+				sourcePath,
+				content: ''
+			}]
+		};
 	}
 
 	private renderMessage(message: ChatMessage) {
@@ -417,9 +514,13 @@ export class ChatView extends ItemView {
 	}
 
 	private clearChat() {
-		this.messages = [];
+		if (this.activeTab === 'agent') {
+			this.agentMessages = [];
+		} else {
+			this.messages = [];
+			this.plugin.geminiService.clearChatHistory();
+		}
 		this.messagesContainer.empty();
-		this.plugin.geminiService.clearChatHistory();
 		this.showWelcomeMessage();
 	}
 
@@ -449,7 +550,8 @@ export class ChatView extends ItemView {
 			{ text: '📍 Insert at Cursor', action: () => this.insertAtCursor(message.content, message.citations) },
 			{ text: '📎 Append to Current Note', action: () => this.appendToCurrentNote(message.content, message.citations) },
 			{ text: '📄 Create New Note', action: () => this.createNewNote(message.content, message.citations) },
-			{ text: '📂 Select Note...', action: () => this.selectNoteToApply(message.content, message.citations) }
+			{ text: '📂 Select Note...', action: () => this.selectNoteToApply(message.content, message.citations) },
+			{ text: `🧠 Save to ${this.plugin.settings.workspaceFolder}`, action: () => this.saveToWorkspace(message.content, message.citations) }
 		];
 
 		for (const item of menuItems) {
@@ -529,7 +631,8 @@ export class ChatView extends ItemView {
 			minute: '2-digit'
 		});
 
-		let result = `\n\n---\n*🤖 Gemini Response (${dateStr})*\n\n${content}`;
+		const label = this.activeTab === 'agent' ? 'Agent Result' : 'Gemini Response';
+		let result = `\n\n---\n*🤖 ${label} (${dateStr})*\n\n${content}`;
 
 		if (citations && citations.length > 0) {
 			result += '\n\n**Sources:**\n';
@@ -540,6 +643,23 @@ export class ChatView extends ItemView {
 
 		result += '\n---\n';
 		return result;
+	}
+
+	private async saveToWorkspace(content: string, citations?: Citation[]) {
+		const folder = await this.plugin.ensureWorkspaceFolder(this.activeTab === 'agent' ? 'agent' : 'compiled');
+		const now = new Date();
+		const dateStr = now.toISOString().slice(0, 10);
+		const timeStr = now.toTimeString().slice(0, 5).replace(':', '-');
+		const fileName = `${folder}/Master of Knowledge ${dateStr} ${timeStr}.md`;
+		const formattedContent = this.formatContentWithMetadata(content, citations);
+		try {
+			const file = await this.app.vault.create(fileName, formattedContent);
+			await this.app.workspace.openLinkText(file.path, '', true);
+			new Notice(`✅ Saved to ${file.path}`);
+		} catch (error) {
+			new Notice('Failed to save workspace note.');
+			console.error('Workspace save error:', error);
+		}
 	}
 
 	// Insert at cursor position in active editor

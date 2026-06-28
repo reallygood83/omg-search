@@ -1,8 +1,13 @@
-# Obsidian Gemini Sync Plugin
+# Master of Knowledge
 
-Sync your Obsidian vault with Google Gemini's File Search API for a **Private NotebookLM** experience. Chat with your notes using AI and get answers grounded in your personal knowledge base.
+Turn your Obsidian vault into a Gemini File Search and Agent-powered knowledge workspace. Ask your notes, inspect sources, run Antigravity/AGY jobs from inside Obsidian, and apply the result back into notes.
 
 ## Features
+
+### Master Dashboard
+- Chat, Agent, Budget, and `_omg` workspace tabs in one Obsidian sidebar
+- Shared Sources, Apply, and Copy actions for both Gemini answers and Agent results
+- Agent results can be saved into the `_omg` workspace without touching source notes
 
 ### Folder-based Auto-Sync
 - Automatically sync markdown files from one or more designated folders (including subfolders) to Gemini
@@ -15,6 +20,16 @@ Sync your Obsidian vault with Google Gemini's File Search API for a **Private No
 - **Citations**: Clickable links to source notes mentioned in responses
 - Chat history maintained during session
 
+### Agent Workspace
+- Run Antigravity/AGY from the dashboard using the Agent tab
+- Active vault context, selected sync folders, trust mode, and `_omg` workspace are passed to the agent prompt
+- Agent output uses the same Apply, Copy, Create Note, Select Note, and Save to `_omg` actions as chat
+
+### Budget Guard
+- Monthly USD budget setting
+- Dashboard budget meter for Gemini and Agent workflows
+- Designed for future live token accounting and model fallback policy
+
 ### Smart Status Management
 - **Status Bar**: Shows sync status at a glance
 - **Settings Dashboard**: View total synced files, pending uploads, and errors
@@ -26,7 +41,7 @@ Sync your Obsidian vault with Google Gemini's File Search API for a **Private No
 1. Clone this repository into your vault's `.obsidian/plugins/` directory
 2. Run `npm install` to install dependencies
 3. Run `npm run build` to build the plugin
-4. Enable "Gemini Sync" in Obsidian's Community Plugins settings
+4. Enable "Master of Knowledge" in Obsidian's Community Plugins settings
 
 ### Manual
 1. Download the latest release (`main.js`, `manifest.json`, `styles.css`)
@@ -42,7 +57,7 @@ Sync your Obsidian vault with Google Gemini's File Search API for a **Private No
    - Copy the key
 
 2. **Configure the Plugin**
-   - Open Obsidian Settings > Gemini Sync
+   - Open Obsidian Settings > Master of Knowledge
    - Paste your API key and click "Verify"
    - Select one or more folders to sync (e.g., "Notes" and "Knowledge")
    - Click "Sync Now" for initial synchronization
@@ -54,9 +69,10 @@ Sync your Obsidian vault with Google Gemini's File Search API for a **Private No
 ## Usage
 
 ### Chat Commands
-- **Open Chat**: Click the ribbon icon or use `Ctrl/Cmd + P` > "Open Gemini Chat"
+- **Open Dashboard**: Click the ribbon icon or use `Ctrl/Cmd + P` > "Open Master of Knowledge"
 - **Clear Chat**: Click the trash icon in the chat header
 - **Force Sync**: Settings > Actions > "Sync Now"
+- **Run Agent**: Open the Agent tab and enter an Antigravity/AGY task
 
 ### Example Prompts
 - "What are the main topics in my notes?"
