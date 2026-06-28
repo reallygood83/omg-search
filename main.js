@@ -2116,6 +2116,7 @@ var ChatView = class extends import_obsidian4.ItemView {
     this.messages = [];
     this.agentMessages = [];
     this.isLoading = false;
+    this.loadingTab = null;
     this.isComposing = false;
     this.syncStatusEl = null;
     this.welcomeEl = null;
@@ -2244,9 +2245,14 @@ var ChatView = class extends import_obsidian4.ItemView {
     });
     this.sendButton = this.inputContainer.createEl("button", {
       cls: "gemini-chat-send-btn",
-      text: "\u27A4"
+      text: this.isLoading && this.loadingTab === this.activeTab ? "\u23F3" : "\u27A4"
     });
+    this.sendButton.disabled = this.isLoading;
     this.sendButton.addEventListener("click", () => this.sendMessage());
+    if (this.isLoading && this.loadingTab === this.activeTab) {
+      const loadingEl = this.messagesContainer.createDiv({ cls: "gemini-chat-loading" });
+      loadingEl.createEl("span", { cls: "gemini-chat-loading-dots", text: "\u25CF\u25CF\u25CF" });
+    }
   }
   renderBudgetTab() {
     const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel" });
@@ -2315,7 +2321,11 @@ var ChatView = class extends import_obsidian4.ItemView {
     const text = this.inputEl.value.trim();
     if (!text || this.isLoading)
       return;
-    if (this.activeTab === "chat" && !this.plugin.settings.apiKey) {
+    const requestTab = this.activeTab;
+    const requestContainer = this.messagesContainer;
+    const requestInput = this.inputEl;
+    const requestButton = this.sendButton;
+    if (requestTab === "chat" && !this.plugin.settings.apiKey) {
       new import_obsidian4.Notice("Please configure your Gemini API key in settings");
       return;
     }
@@ -2327,35 +2337,35 @@ var ChatView = class extends import_obsidian4.ItemView {
       role: "user",
       content: text
     };
-    const list = this.activeTab === "agent" ? this.agentMessages : this.messages;
+    const list = requestTab === "agent" ? this.agentMessages : this.messages;
     list.push(userMessage);
     this.renderMessage(userMessage);
-    this.inputEl.value = "";
-    this.inputEl.style.height = "auto";
+    requestInput.value = "";
+    requestInput.style.height = "auto";
     this.isLoading = true;
-    this.sendButton.disabled = true;
-    this.sendButton.textContent = "\u23F3";
-    const loadingEl = this.messagesContainer.createDiv({ cls: "gemini-chat-loading" });
+    this.loadingTab = requestTab;
+    requestButton.disabled = true;
+    requestButton.textContent = "\u23F3";
+    const loadingEl = requestContainer.createDiv({ cls: "gemini-chat-loading" });
     loadingEl.createEl("span", { cls: "gemini-chat-loading-dots", text: "\u25CF\u25CF\u25CF" });
     this.scrollToBottom();
     try {
-      const response = this.activeTab === "agent" ? await this.runAgentMessage(text) : await this.plugin.geminiService.chat(text);
-      loadingEl.remove();
+      const response = requestTab === "agent" ? await this.runAgentMessage(text) : await this.plugin.geminiService.chat(text);
       list.push(response);
-      this.renderMessage(response);
     } catch (error) {
-      loadingEl.remove();
       const errorMessage = {
         role: "model",
         content: `Error: ${error instanceof Error ? error.message : "Failed to get response"}`
       };
       list.push(errorMessage);
-      this.renderMessage(errorMessage);
+    } finally {
+      loadingEl.remove();
+      this.isLoading = false;
+      this.loadingTab = null;
+      if (this.activeTab === requestTab) {
+        this.renderActiveTab();
+      }
     }
-    this.isLoading = false;
-    this.sendButton.disabled = false;
-    this.sendButton.textContent = "\u27A4";
-    this.scrollToBottom();
   }
   async runAgentMessage(text) {
     var _a;
