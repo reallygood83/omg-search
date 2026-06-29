@@ -111,6 +111,51 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 				})
 			);
 
+		const fileSearchDiagnosticEl = containerEl.createDiv({ cls: 'mok-file-search-diagnostic' });
+
+		new Setting(containerEl)
+			.setName('File Search Upload Diagnostic')
+			.setDesc('Checks model access, File Search store access, Files API upload, and File Search import. Use this when Sync Dashboard only shows error files.')
+			.addButton(button => button
+				.setButtonText('Diagnose File Search')
+				.onClick(async () => {
+					if (!this.plugin.settings.apiKey) {
+						new Notice('Please enter an API key first');
+						return;
+					}
+					button.setButtonText('Diagnosing...');
+					button.setDisabled(true);
+					fileSearchDiagnosticEl.empty();
+					fileSearchDiagnosticEl.createEl('p', { text: 'Running File Search upload diagnostic...' });
+					try {
+						const result = await this.plugin.geminiService.diagnoseFileSearchUpload();
+						fileSearchDiagnosticEl.empty();
+						fileSearchDiagnosticEl.createEl('strong', {
+							text: result.ok ? 'File Search diagnostic passed' : 'File Search diagnostic failed'
+						});
+						fileSearchDiagnosticEl.createEl('p', {
+							text: `Stage: ${result.stage} | Key type: ${result.keyFamily}${result.status ? ` | HTTP ${result.status}` : ''}`
+						});
+						fileSearchDiagnosticEl.createEl('p', { text: result.message });
+						if (result.recommendation) {
+							fileSearchDiagnosticEl.createEl('p', { text: `Recommendation: ${result.recommendation}` });
+						}
+						if (result.detail) {
+							fileSearchDiagnosticEl.createEl('pre', { text: result.detail });
+						}
+						new Notice(result.ok ? 'File Search upload diagnostic passed.' : `File Search diagnostic failed at ${result.stage}.`);
+					} catch (error) {
+						fileSearchDiagnosticEl.empty();
+						fileSearchDiagnosticEl.createEl('strong', { text: 'File Search diagnostic failed unexpectedly' });
+						fileSearchDiagnosticEl.createEl('pre', { text: error instanceof Error ? error.message : String(error) });
+						new Notice('File Search diagnostic failed. Check the settings panel for details.');
+					} finally {
+						button.setButtonText('Diagnose File Search');
+						button.setDisabled(false);
+					}
+				})
+			);
+
 		new Setting(containerEl)
 			.setName('Gemini Model')
 			.setDesc('Select the Gemini model to use for chat. Gemini 3.5 Flash is recommended for best performance.')

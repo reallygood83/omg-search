@@ -27,13 +27,20 @@ Turn your Obsidian vault into a Gemini File Search and Agent-powered knowledge w
 
 ### Budget Guard
 - Monthly USD budget setting
-- Dashboard budget meter for Gemini and Agent workflows
-- Designed for future live token accounting and model fallback policy
+- Dashboard budget meter for Gemini API chat usage
+- Agent/Antigravity runs are not counted because they do not use the plugin Gemini API key
+- Budget totals are reconciled from `_omg/logs/budget-YYYY-MM.jsonl`
 
 ### Smart Status Management
 - **Status Bar**: Shows sync status at a glance
 - **Settings Dashboard**: View total synced files, pending uploads, and errors
 - Debounced sync to reduce API calls during rapid edits
+
+### File Search Upload Diagnostics
+- Separate diagnostic for Gemini File Search sync
+- Checks model access, File Search store access, Files API upload, and File Search import
+- Helps distinguish "API key works for chat" from "API key can upload/index notes"
+- Useful when Sync Dashboard only shows error files or when a new `AQ...` API key returns upload/import `403`
 
 ## Installation
 
@@ -61,6 +68,7 @@ Turn your Obsidian vault into a Gemini File Search and Agent-powered knowledge w
 2. **Configure the Plugin**
    - Open Obsidian Settings > Master of Knowledge
    - Paste your API key and click "Verify"
+   - If you plan to sync notes, click "Diagnose File Search" to confirm upload/import access
    - Select one or more folders to sync (e.g., "Notes" and "Knowledge")
    - Click "Sync Now" for initial synchronization
 
@@ -91,12 +99,22 @@ Turn your Obsidian vault into a Gemini File Search and Agent-powered knowledge w
 | Corpus Display Name | Name for your knowledge base | "Obsidian Vault" |
 | Auto Sync | Automatically sync on file changes | Enabled |
 | Sync Debounce | Wait time before syncing (ms) | 3000 |
+| Workspace Folder | Vault folder for generated logs, graph files, and workspace artifacts | `_omg` |
+| Agent Output Folder | Vault folder for Agent-created notes | `_omg/agent` |
+| Monthly Budget | Soft monthly Gemini API budget shown in the dashboard | `7` |
 
 ## Important Notes
 
 ### API Key Security
 - Your API key is stored locally in the plugin's data file
 - Never share your `data.json` file as it contains your API key
+
+### API Key Compatibility
+- The normal "Verify" button checks whether the key can call Gemini model endpoints.
+- Sync uses additional File Search and Files API endpoints.
+- If "Verify" passes but every synced file becomes an error, run **Diagnose File Search** in settings.
+- Some users have reported `403` failures with newer `AQ...` Google AI Studio keys on File Search upload/import flows. If the diagnostic fails at `files_upload` or `import_file`, try a fresh Google Cloud project/key or an older `AIza...` key if you already have one.
+- Related references: [Gemini API key docs](https://ai.google.dev/gemini-api/docs/api-key), [Gemini File Search docs](https://ai.google.dev/gemini-api/docs/file-search), [AQ key File Search discussion](https://discuss.ai.google.dev/t/new-aq-api-keys-failing-to-upload-to-file-search-store/140817)
 
 ### Cost Considerations
 - Google Gemini API has usage-based pricing
@@ -119,6 +137,16 @@ Turn your Obsidian vault into a Gemini File Search and Agent-powered knowledge w
 - Check if the sync folder is correctly selected
 - Look at the status dashboard for error messages
 - Try "Force Sync" in settings
+
+### "Verify passes, but every file is an error"
+- Open Obsidian Settings > Master of Knowledge
+- Click **Diagnose File Search**
+- Read the failed stage:
+  - `models`: the API key itself is not valid for Gemini model calls
+  - `file_search_store`: the key cannot create/list File Search stores
+  - `files_upload`: the key cannot upload files to the Gemini Files API
+  - `import_file`: the file uploaded, but File Search import failed
+- If the key starts with `AQ` and the failure is `403` at upload/import, this is likely a Gemini File Search key compatibility issue rather than a folder-selection issue.
 
 ### "Chat not responding"
 - Verify your API key is still valid

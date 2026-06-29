@@ -33,6 +33,16 @@ export interface Citation {
 	content: string;
 }
 
+export interface FileSearchDiagnosticResult {
+	ok: boolean;
+	stage: 'missing_api_key' | 'models' | 'file_search_store' | 'files_upload' | 'import_file' | 'complete';
+	keyFamily: 'AQ' | 'AIza' | 'other';
+	status?: number;
+	message: string;
+	detail?: string;
+	recommendation?: string;
+}
+
 export class GeminiService {
 	private plugin: GeminiSyncPlugin;
 	private genAI: GoogleGenerativeAI | null = null;
@@ -130,6 +140,205 @@ export class GeminiService {
 			console.error('API key verification failed:', error);
 			return false;
 		}
+	}
+
+	async diagnoseFileSearchUpload(): Promise<FileSearchDiagnosticResult> {
+		const keyFamily = this.getApiKeyFamily();
+		if (!this.plugin.settings.apiKey) {
+			return {
+				ok: false,
+				stage: 'missing_api_key',
+				keyFamily,
+				message: 'Gemini API key is missing.',
+				recommendation: 'Add a Gemini API key in plugin settings first.'
+			};
+		}
+
+		const modelsResponse = await this.apiRequest(
+			`${API_BASE_URL}/models?key=${this.plugin.settings.apiKey}`
+		);
+		if (!modelsResponse.ok) {
+			return this.buildDiagnosticFailure(
+				'models',
+				keyFamily,
+				modelsResponse.status,
+				modelsResponse.data,
+				'The key could not list Gemini models.',
+				'Create a valid Gemini API key in Google AI Studio and make sure the Gemini API is enabled for the project.'
+			);
+		}
+
+		const storeName = await this.getDiagnosticStoreName(keyFamily);
+		if (!storeName) {
+			const storesResponse = await this.apiRequest(
+				`${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`
+			);
+			return this.buildDiagnosticFailure(
+				'file_search_store',
+				keyFamily,
+				storesResponse.status,
+				storesResponse.data,
+				'The key can call Gemini models, but cannot create or list File Search stores.',
+				this.getFileSearchRecommendation(keyFamily)
+			);
+		}
+
+		const upload = await this.uploadDiagnosticFile();
+		if (!upload.ok || !upload.data?.file?.name) {
+			return this.buildDiagnosticFailure(
+				'files_upload',
+				keyFamily,
+				upload.status,
+				upload.data,
+				'The key can access File Search stores, but Files API upload failed.',
+				this.getFileSearchRecommendation(keyFamily)
+			);
+		}
+
+		const fileName = upload.data.file.name;
+		const imported = await this.importDiagnosticFile(storeName, fileName);
+		if (!imported.ok) {
+			return this.buildDiagnosticFailure(
+				'import_file',
+				keyFamily,
+				imported.status,
+				imported.data,
+				'The key uploaded a file, but File Search import failed.',
+				this.getFileSearchRecommendation(keyFamily)
+			);
+		}
+
+		return {
+			ok: true,
+			stage: 'complete',
+			keyFamily,
+			status: imported.status,
+			message: 'File Search upload diagnostics passed. This key can create stores, upload files, and import them for sync.',
+			detail: `Diagnostic store: ${storeName}`
+		};
+	}
+
+	private async getDiagnosticStoreName(keyFamily: FileSearchDiagnosticResult['keyFamily']): Promise<string | null> {
+		const displayName = `${this.plugin.settings.corpusDisplayName || 'Obsidian Vault'} Diagnostics`;
+		const listResponse = await this.apiRequest(
+			`${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`
+		);
+		if (listResponse.ok) {
+			const existing = (listResponse.data.fileSearchStores || []).find((store: CorpusInfo) => store.displayName === displayName);
+			if (existing?.name) return existing.name;
+		} else if (listResponse.status === 403 && keyFamily === 'AQ') {
+			return null;
+		}
+
+		const createResponse = await this.apiRequest(
+			`${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`,
+			'POST',
+			{ displayName }
+		);
+		return createResponse.ok && createResponse.data?.name ? createResponse.data.name : null;
+	}
+
+	private async uploadDiagnosticFile(): Promise<{ ok: boolean; status: number; data: any }> {
+		const boundary = '----MOKDiagnosticBoundary' + Math.random().toString(36).substring(2);
+		const displayName = '_mok-diagnostics-api-key-upload-test.md';
+		const content = [
+			'# Master of Knowledge File Search Diagnostic',
+			'',
+			'This tiny file verifies that the current API key can upload Markdown content to Gemini Files API.'
+		].join('\n');
+		const metadata = JSON.stringify({
+			file: {
+				displayName,
+				mimeType: 'text/markdown'
+			}
+		});
+		let body = '';
+		body += `--${boundary}\r\n`;
+		body += 'Content-Disposition: form-data; name="metadata"\r\n';
+		body += 'Content-Type: application/json\r\n\r\n';
+		body += `${metadata}\r\n`;
+		body += `--${boundary}\r\n`;
+		body += `Content-Disposition: form-data; name="file"; filename="${displayName}"\r\n`;
+		body += 'Content-Type: text/markdown\r\n\r\n';
+		body += `${content}\r\n`;
+		body += `--${boundary}--`;
+
+		return this.requestUrlDiagnostic({
+			url: `${UPLOAD_BASE_URL}/files?uploadType=multipart&key=${this.plugin.settings.apiKey}`,
+			method: 'POST',
+			headers: {
+				'Content-Type': `multipart/form-data; boundary=${boundary}`
+			},
+			body
+		});
+	}
+
+	private async importDiagnosticFile(storeName: string, fileName: string): Promise<{ ok: boolean; status: number; data: any }> {
+		return this.requestUrlDiagnostic({
+			url: `${API_BASE_URL}/${storeName}:importFile?key=${this.plugin.settings.apiKey}`,
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify({ fileName })
+		});
+	}
+
+	private async requestUrlDiagnostic(params: RequestUrlParam): Promise<{ ok: boolean; status: number; data: any }> {
+		try {
+			const response = await requestUrl(params);
+			return {
+				ok: response.status >= 200 && response.status < 300,
+				status: response.status,
+				data: response.json || response.text
+			};
+		} catch (error: any) {
+			const status = Number(error?.status || error?.response?.status || 500);
+			return {
+				ok: false,
+				status,
+				data: error?.response || error?.message || String(error)
+			};
+		}
+	}
+
+	private buildDiagnosticFailure(
+		stage: FileSearchDiagnosticResult['stage'],
+		keyFamily: FileSearchDiagnosticResult['keyFamily'],
+		status: number,
+		data: any,
+		message: string,
+		recommendation: string
+	): FileSearchDiagnosticResult {
+		return {
+			ok: false,
+			stage,
+			keyFamily,
+			status,
+			message,
+			detail: this.summarizeDiagnosticData(data),
+			recommendation
+		};
+	}
+
+	private summarizeDiagnosticData(data: any): string {
+		if (!data) return '';
+		const text = typeof data === 'string' ? data : JSON.stringify(data);
+		return text.length > 900 ? `${text.slice(0, 900)}...` : text;
+	}
+
+	private getApiKeyFamily(): FileSearchDiagnosticResult['keyFamily'] {
+		const key = this.plugin.settings.apiKey.trim();
+		if (key.startsWith('AQ')) return 'AQ';
+		if (key.startsWith('AIza')) return 'AIza';
+		return 'other';
+	}
+
+	private getFileSearchRecommendation(keyFamily: FileSearchDiagnosticResult['keyFamily']): string {
+		if (keyFamily === 'AQ') {
+			return 'This looks like a new AQ Auth key. If model verification works but File Search upload/import returns 403, try an older AIza key if available or create a fresh Google Cloud project/key while Google resolves AQ File Search compatibility.';
+		}
+		return 'Check that this key is allowed to use Gemini File Search and Files API endpoints. If API restrictions are enabled, allow the Gemini API and try a fresh key/project.';
 	}
 
 	// ==================== Corpus Management (FileSearchStores) ====================

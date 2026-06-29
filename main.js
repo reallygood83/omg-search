@@ -90,6 +90,45 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
         }
       })
     );
+    const fileSearchDiagnosticEl = containerEl.createDiv({ cls: "mok-file-search-diagnostic" });
+    new import_obsidian.Setting(containerEl).setName("File Search Upload Diagnostic").setDesc("Checks model access, File Search store access, Files API upload, and File Search import. Use this when Sync Dashboard only shows error files.").addButton(
+      (button) => button.setButtonText("Diagnose File Search").onClick(async () => {
+        if (!this.plugin.settings.apiKey) {
+          new import_obsidian.Notice("Please enter an API key first");
+          return;
+        }
+        button.setButtonText("Diagnosing...");
+        button.setDisabled(true);
+        fileSearchDiagnosticEl.empty();
+        fileSearchDiagnosticEl.createEl("p", { text: "Running File Search upload diagnostic..." });
+        try {
+          const result = await this.plugin.geminiService.diagnoseFileSearchUpload();
+          fileSearchDiagnosticEl.empty();
+          fileSearchDiagnosticEl.createEl("strong", {
+            text: result.ok ? "File Search diagnostic passed" : "File Search diagnostic failed"
+          });
+          fileSearchDiagnosticEl.createEl("p", {
+            text: `Stage: ${result.stage} | Key type: ${result.keyFamily}${result.status ? ` | HTTP ${result.status}` : ""}`
+          });
+          fileSearchDiagnosticEl.createEl("p", { text: result.message });
+          if (result.recommendation) {
+            fileSearchDiagnosticEl.createEl("p", { text: `Recommendation: ${result.recommendation}` });
+          }
+          if (result.detail) {
+            fileSearchDiagnosticEl.createEl("pre", { text: result.detail });
+          }
+          new import_obsidian.Notice(result.ok ? "File Search upload diagnostic passed." : `File Search diagnostic failed at ${result.stage}.`);
+        } catch (error) {
+          fileSearchDiagnosticEl.empty();
+          fileSearchDiagnosticEl.createEl("strong", { text: "File Search diagnostic failed unexpectedly" });
+          fileSearchDiagnosticEl.createEl("pre", { text: error instanceof Error ? error.message : String(error) });
+          new import_obsidian.Notice("File Search diagnostic failed. Check the settings panel for details.");
+        } finally {
+          button.setButtonText("Diagnose File Search");
+          button.setDisabled(false);
+        }
+      })
+    );
     new import_obsidian.Setting(containerEl).setName("Gemini Model").setDesc("Select the Gemini model to use for chat. Gemini 3.5 Flash is recommended for best performance.").addDropdown((dropdown) => {
       dropdown.addOption("gemini-3.5-flash", "Gemini 3.5 Flash (Recommended)");
       dropdown.addOption("gemini-3-flash-preview", "Gemini 3 Flash Preview");
@@ -1467,6 +1506,194 @@ var GeminiService = class {
       console.error("API key verification failed:", error);
       return false;
     }
+  }
+  async diagnoseFileSearchUpload() {
+    var _a, _b;
+    const keyFamily = this.getApiKeyFamily();
+    if (!this.plugin.settings.apiKey) {
+      return {
+        ok: false,
+        stage: "missing_api_key",
+        keyFamily,
+        message: "Gemini API key is missing.",
+        recommendation: "Add a Gemini API key in plugin settings first."
+      };
+    }
+    const modelsResponse = await this.apiRequest(
+      `${API_BASE_URL}/models?key=${this.plugin.settings.apiKey}`
+    );
+    if (!modelsResponse.ok) {
+      return this.buildDiagnosticFailure(
+        "models",
+        keyFamily,
+        modelsResponse.status,
+        modelsResponse.data,
+        "The key could not list Gemini models.",
+        "Create a valid Gemini API key in Google AI Studio and make sure the Gemini API is enabled for the project."
+      );
+    }
+    const storeName = await this.getDiagnosticStoreName(keyFamily);
+    if (!storeName) {
+      const storesResponse = await this.apiRequest(
+        `${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`
+      );
+      return this.buildDiagnosticFailure(
+        "file_search_store",
+        keyFamily,
+        storesResponse.status,
+        storesResponse.data,
+        "The key can call Gemini models, but cannot create or list File Search stores.",
+        this.getFileSearchRecommendation(keyFamily)
+      );
+    }
+    const upload = await this.uploadDiagnosticFile();
+    if (!upload.ok || !((_b = (_a = upload.data) == null ? void 0 : _a.file) == null ? void 0 : _b.name)) {
+      return this.buildDiagnosticFailure(
+        "files_upload",
+        keyFamily,
+        upload.status,
+        upload.data,
+        "The key can access File Search stores, but Files API upload failed.",
+        this.getFileSearchRecommendation(keyFamily)
+      );
+    }
+    const fileName = upload.data.file.name;
+    const imported = await this.importDiagnosticFile(storeName, fileName);
+    if (!imported.ok) {
+      return this.buildDiagnosticFailure(
+        "import_file",
+        keyFamily,
+        imported.status,
+        imported.data,
+        "The key uploaded a file, but File Search import failed.",
+        this.getFileSearchRecommendation(keyFamily)
+      );
+    }
+    return {
+      ok: true,
+      stage: "complete",
+      keyFamily,
+      status: imported.status,
+      message: "File Search upload diagnostics passed. This key can create stores, upload files, and import them for sync.",
+      detail: `Diagnostic store: ${storeName}`
+    };
+  }
+  async getDiagnosticStoreName(keyFamily) {
+    var _a;
+    const displayName = `${this.plugin.settings.corpusDisplayName || "Obsidian Vault"} Diagnostics`;
+    const listResponse = await this.apiRequest(
+      `${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`
+    );
+    if (listResponse.ok) {
+      const existing = (listResponse.data.fileSearchStores || []).find((store) => store.displayName === displayName);
+      if (existing == null ? void 0 : existing.name)
+        return existing.name;
+    } else if (listResponse.status === 403 && keyFamily === "AQ") {
+      return null;
+    }
+    const createResponse = await this.apiRequest(
+      `${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`,
+      "POST",
+      { displayName }
+    );
+    return createResponse.ok && ((_a = createResponse.data) == null ? void 0 : _a.name) ? createResponse.data.name : null;
+  }
+  async uploadDiagnosticFile() {
+    const boundary = "----MOKDiagnosticBoundary" + Math.random().toString(36).substring(2);
+    const displayName = "_mok-diagnostics-api-key-upload-test.md";
+    const content = [
+      "# Master of Knowledge File Search Diagnostic",
+      "",
+      "This tiny file verifies that the current API key can upload Markdown content to Gemini Files API."
+    ].join("\n");
+    const metadata = JSON.stringify({
+      file: {
+        displayName,
+        mimeType: "text/markdown"
+      }
+    });
+    let body = "";
+    body += `--${boundary}\r
+`;
+    body += 'Content-Disposition: form-data; name="metadata"\r\n';
+    body += "Content-Type: application/json\r\n\r\n";
+    body += `${metadata}\r
+`;
+    body += `--${boundary}\r
+`;
+    body += `Content-Disposition: form-data; name="file"; filename="${displayName}"\r
+`;
+    body += "Content-Type: text/markdown\r\n\r\n";
+    body += `${content}\r
+`;
+    body += `--${boundary}--`;
+    return this.requestUrlDiagnostic({
+      url: `${UPLOAD_BASE_URL}/files?uploadType=multipart&key=${this.plugin.settings.apiKey}`,
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`
+      },
+      body
+    });
+  }
+  async importDiagnosticFile(storeName, fileName) {
+    return this.requestUrlDiagnostic({
+      url: `${API_BASE_URL}/${storeName}:importFile?key=${this.plugin.settings.apiKey}`,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ fileName })
+    });
+  }
+  async requestUrlDiagnostic(params) {
+    var _a;
+    try {
+      const response = await (0, import_obsidian2.requestUrl)(params);
+      return {
+        ok: response.status >= 200 && response.status < 300,
+        status: response.status,
+        data: response.json || response.text
+      };
+    } catch (error) {
+      const status = Number((error == null ? void 0 : error.status) || ((_a = error == null ? void 0 : error.response) == null ? void 0 : _a.status) || 500);
+      return {
+        ok: false,
+        status,
+        data: (error == null ? void 0 : error.response) || (error == null ? void 0 : error.message) || String(error)
+      };
+    }
+  }
+  buildDiagnosticFailure(stage, keyFamily, status, data, message, recommendation) {
+    return {
+      ok: false,
+      stage,
+      keyFamily,
+      status,
+      message,
+      detail: this.summarizeDiagnosticData(data),
+      recommendation
+    };
+  }
+  summarizeDiagnosticData(data) {
+    if (!data)
+      return "";
+    const text = typeof data === "string" ? data : JSON.stringify(data);
+    return text.length > 900 ? `${text.slice(0, 900)}...` : text;
+  }
+  getApiKeyFamily() {
+    const key = this.plugin.settings.apiKey.trim();
+    if (key.startsWith("AQ"))
+      return "AQ";
+    if (key.startsWith("AIza"))
+      return "AIza";
+    return "other";
+  }
+  getFileSearchRecommendation(keyFamily) {
+    if (keyFamily === "AQ") {
+      return "This looks like a new AQ Auth key. If model verification works but File Search upload/import returns 403, try an older AIza key if available or create a fresh Google Cloud project/key while Google resolves AQ File Search compatibility.";
+    }
+    return "Check that this key is allowed to use Gemini File Search and Files API endpoints. If API restrictions are enabled, allow the Gemini API and try a fresh key/project.";
   }
   // ==================== Corpus Management (FileSearchStores) ====================
   async createCorpus(displayName) {

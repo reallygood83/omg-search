@@ -89,6 +89,38 @@
 	opacity: 0.55;
 }
 
+.mok-file-search-diagnostic {
+	margin: 8px 0 14px;
+	padding: 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+}
+
+.mok-file-search-diagnostic:empty {
+	display: none;
+}
+
+.mok-file-search-diagnostic p {
+	margin: 6px 0 0;
+	color: var(--text-muted);
+	font-size: 12px;
+	line-height: 1.45;
+}
+
+.mok-file-search-diagnostic pre {
+	max-height: 180px;
+	overflow: auto;
+	margin: 8px 0 0;
+	padding: 8px;
+	border-radius: 6px;
+	background: var(--background-primary);
+	color: var(--text-muted);
+	font-size: 11px;
+	white-space: pre-wrap;
+}
+
 @media (max-width: 520px) {
 	.mok-conversation-toolbar {
 		align-items: stretch;
