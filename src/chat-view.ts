@@ -427,39 +427,201 @@ export class ChatView extends ItemView {
 		nodes: KnowledgeGraphNode[],
 		edges: KnowledgeGraphEdge[]
 	): { nodes: any[]; edges: any[] } {
-		const selected = nodes
+		const noteCandidates = nodes
 			.filter(node => node.kind !== 'tag')
 			.sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0) || (b.degree || 0) - (a.degree || 0) || a.title.localeCompare(b.title))
 			.slice(0, 120);
+		const communities = new Map<number, KnowledgeGraphNode[]>();
+		for (const node of noteCandidates) {
+			const community = node.community || 0;
+			const list = communities.get(community) || [];
+			list.push(node);
+			communities.set(community, list);
+		}
+		const communityEntries = Array.from(communities.entries())
+			.sort((a, b) => b[1].length - a[1].length)
+			.slice(0, 10);
+		const selected: KnowledgeGraphNode[] = [];
+		const canvasNodes: any[] = [];
+		const groupWidth = 1500;
+		const groupGapX = 220;
+		const groupGapY = 260;
+		const columns = 2;
+		const columnHeights = new Array(columns).fill(0);
+
+		for (const [groupIndex, [community, members]] of communityEntries.entries()) {
+			const shown = members
+				.sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0) || (b.degree || 0) - (a.degree || 0))
+				.slice(0, groupIndex < 4 ? 18 : 10);
+			selected.push(...shown);
+			const col = groupIndex % columns;
+			const rowY = columnHeights[col];
+			const x = col * (groupWidth + groupGapX);
+			const y = rowY;
+			const childRows = Math.max(1, Math.ceil(Math.max(0, shown.length - 1) / 4));
+			const groupHeight = 360 + childRows * 180;
+			columnHeights[col] += groupHeight + groupGapY;
+
+			canvasNodes.push({
+				id: `community:${community}`,
+				type: 'group',
+				x,
+				y,
+				width: groupWidth,
+				height: groupHeight,
+				color: this.communityCanvasColor(community),
+				label: `Community ${community + 1} · ${members.length} notes`
+			});
+
+			const [hub, ...rest] = shown;
+			if (hub) {
+				canvasNodes.push({
+					id: hub.id,
+					type: 'file',
+					x: x + 70,
+					y: y + 85,
+					width: 460,
+					height: 190,
+					color: this.communityCanvasColor(community),
+					file: hub.path
+				});
+			}
+
+			rest.forEach((node, index) => {
+				const innerCol = index % 4;
+				const innerRow = Math.floor(index / 4);
+				canvasNodes.push({
+					id: node.id,
+					type: 'file',
+					x: x + 580 + innerCol * 220,
+					y: y + 85 + innerRow * 175,
+					width: 190,
+					height: 130,
+					color: this.communityCanvasColor(community),
+					file: node.path
+				});
+			});
+		}
+
 		const selectedIds = new Set(selected.map(node => node.id));
 		const tagNodes = nodes
 			.filter(node => node.kind === 'tag' && (node.degree || 0) > 1)
 			.sort((a, b) => (b.degree || 0) - (a.degree || 0))
-			.slice(0, 30);
+			.slice(0, 14);
 		for (const node of tagNodes) selectedIds.add(node.id);
-		const canvasNodes = [...selected, ...tagNodes].map((node, index) => {
-			const col = index % 10;
-			const row = Math.floor(index / 10);
-			const isTag = node.kind === 'tag';
+
+		if (tagNodes.length > 0) {
+			const maxHeight = Math.max(...columnHeights);
+			const tagX = columns * (groupWidth + groupGapX);
+			canvasNodes.push({
+				id: 'tag-bridges',
+				type: 'group',
+				x: tagX,
+				y: 0,
+				width: 760,
+				height: Math.max(520, tagNodes.length * 150 + 180),
+				color: '6',
+				label: 'Tag Bridges'
+			});
+			tagNodes.forEach((node, index) => {
+				canvasNodes.push({
+					id: node.id,
+					type: 'text',
+					x: tagX + 70,
+					y: 90 + index * 145,
+					width: 620,
+					height: 90,
+					color: this.communityCanvasColor(node.community || 5),
+					text: `${node.title}\n${node.degree || 0} linked notes`
+				});
+			});
+			void maxHeight;
+		}
+
+		if (canvasNodes.length === 0) {
+			const fallback = noteCandidates.slice(0, 40);
+			for (const node of fallback) selectedIds.add(node.id);
+			fallback.forEach((node, index) => {
+				const col = index % 4;
+				const row = Math.floor(index / 4);
+				canvasNodes.push({
+					id: node.id,
+					type: 'file',
+					x: col * 340,
+					y: row * 210,
+					width: 300,
+					height: 150,
+					color: this.communityCanvasColor(node.community || 0),
+					file: node.path
+				});
+			});
+		}
+
+		const visibleEdgeIds = new Set<string>();
+		const canvasEdges = edges
+			.filter(edge => selectedIds.has(edge.from) && selectedIds.has(edge.to))
+			.sort((a, b) => (a.type === 'wikilink' ? -1 : 1) - (b.type === 'wikilink' ? -1 : 1))
+			.slice(0, 260)
+			.map(edge => {
+				const id = visibleEdgeIds.has(edge.id) ? `${edge.id}:${visibleEdgeIds.size}` : edge.id;
+				visibleEdgeIds.add(edge.id);
+				return {
+					id,
+					fromNode: edge.from,
+					toNode: edge.to,
+					label: edge.type === 'wikilink' ? 'link' : ''
+				};
+			});
+		const legendX = 0;
+		const legendY = Math.max(...columnHeights, 0) + 80;
+		canvasNodes.push({
+			id: 'graph-legend',
+			type: 'text',
+			x: legendX,
+			y: legendY,
+			width: 1180,
+			height: 180,
+			color: '6',
+			text: [
+				'Master of Knowledge Graph',
+				'Community groups are ranked by PageRank and degree. Large cards are local hubs. Tag Bridges show cross-cutting tags.',
+				'This canvas intentionally shows the most meaningful nodes, not every synced note.'
+			].join('\n')
+		});
+		return { nodes: canvasNodes, edges: canvasEdges };
+	}
+
+	private buildLegacyGridGraphCanvas(
+		nodes: KnowledgeGraphNode[],
+		edges: KnowledgeGraphEdge[]
+	): { nodes: any[]; edges: any[] } {
+		const selected = nodes
+			.filter(node => node.kind !== 'tag')
+			.sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0) || (b.degree || 0) - (a.degree || 0) || a.title.localeCompare(b.title))
+			.slice(0, 80);
+		const selectedIds = new Set(selected.map(node => node.id));
+		const canvasNodes = selected.map((node, index) => {
+			const col = index % 8;
+			const row = Math.floor(index / 8);
 			return {
 				id: node.id,
-				type: isTag ? 'text' : 'file',
-				x: col * 360,
-				y: row * 220,
+				type: 'file',
+				x: col * 340,
+				y: row * 210,
 				width: 300,
-				height: isTag ? 80 : 160,
+				height: 150,
 				color: this.communityCanvasColor(node.community || 0),
-				...(isTag ? { text: node.title } : { file: node.path })
+				file: node.path
 			};
 		});
 		const canvasEdges = edges
 			.filter(edge => selectedIds.has(edge.from) && selectedIds.has(edge.to))
-			.slice(0, 400)
+			.slice(0, 200)
 			.map(edge => ({
 				id: edge.id,
 				fromNode: edge.from,
 				toNode: edge.to,
-				label: edge.type === 'tag' ? 'tag' : ''
+				label: edge.type === 'wikilink' ? 'link' : ''
 			}));
 		return { nodes: canvasNodes, edges: canvasEdges };
 	}
