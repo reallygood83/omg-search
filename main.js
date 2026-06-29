@@ -2864,10 +2864,11 @@ var ChatView = class extends import_obsidian4.ItemView {
     const budget = this.plugin.settings.monthlyBudgetUsd;
     const used = this.plugin.settings.estimatedMonthlySpendUsd;
     const month = this.plugin.settings.estimatedMonthlySpendMonth || this.plugin.getCurrentBudgetMonth();
-    const pct = budget > 0 ? Math.min(100, Math.round(used / budget * 100)) : 0;
-    panel.createEl("p", { text: `Estimated ${month} usage: $${used.toFixed(4)} / $${budget.toFixed(2)} (${pct}%)` });
+    const pctValue = budget > 0 ? Math.min(100, used / budget * 100) : 0;
+    const pctLabel = pctValue > 0 && pctValue < 1 ? pctValue.toFixed(2) : String(Math.round(pctValue));
+    panel.createEl("p", { text: `Estimated ${month} usage: $${used.toFixed(4)} / $${budget.toFixed(2)} (${pctLabel}%)` });
     const meter = panel.createDiv({ cls: "mok-budget-meter" });
-    meter.createDiv({ cls: "mok-budget-fill" }).style.width = `${pct}%`;
+    meter.createDiv({ cls: "mok-budget-fill" }).style.width = `${pctValue}%`;
     panel.createEl("p", { text: `Gemini API log: ${this.plugin.settings.workspaceFolder}/logs/budget-${month}.jsonl` });
     panel.createEl("p", { text: "Cost is an estimate from Gemini token metadata when available. Agent/Antigravity CLI runs are not counted because they do not use this plugin API key." });
     panel.createEl("p", { text: "Default policy: Flash-Lite for classification, Flash for answers, Pro only after manual approval." });
@@ -5203,6 +5204,7 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
     this.syncEngine = new SyncEngine(this, this.geminiService);
     this.agentService = new AgentService(this);
     await this.ensureDefaultWorkspaceFolders();
+    await this.reconcileBudgetFromLog();
     this.registerView(
       CHAT_VIEW_TYPE,
       (leaf) => new ChatView(leaf, this)
@@ -5286,14 +5288,14 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
       this.settings.estimatedMonthlySpendMonth = month;
       this.settings.estimatedMonthlySpendUsd = 0;
     }
-    this.settings.estimatedMonthlySpendUsd = Number(((this.settings.estimatedMonthlySpendUsd || 0) + event.estimatedCostUsd).toFixed(6));
-    await this.saveSettings();
+    const loggedSpend = await this.readBudgetLogTotal(month);
+    const estimatedMonthlySpendUsd = Number((loggedSpend + event.estimatedCostUsd).toFixed(6));
     const logEntry = {
       timestamp: new Date().toISOString(),
       month,
       ...event,
       monthlyBudgetUsd: this.settings.monthlyBudgetUsd,
-      estimatedMonthlySpendUsd: this.settings.estimatedMonthlySpendUsd
+      estimatedMonthlySpendUsd
     };
     try {
       const folder = await this.ensureWorkspaceFolder("logs");
@@ -5306,8 +5308,50 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
       } else {
         await this.app.vault.create(filePath, line);
       }
+      this.settings.estimatedMonthlySpendUsd = estimatedMonthlySpendUsd;
+      await this.saveSettings();
     } catch (error) {
       console.warn("Failed to write budget usage log:", error);
+      this.settings.estimatedMonthlySpendUsd = Number(((this.settings.estimatedMonthlySpendUsd || 0) + event.estimatedCostUsd).toFixed(6));
+      await this.saveSettings();
+    }
+  }
+  async reconcileBudgetFromLog() {
+    const month = this.getCurrentBudgetMonth();
+    if (this.settings.estimatedMonthlySpendMonth !== month) {
+      this.settings.estimatedMonthlySpendMonth = month;
+      this.settings.estimatedMonthlySpendUsd = 0;
+    }
+    const loggedSpend = await this.readBudgetLogTotal(month);
+    if (loggedSpend > 0 && Math.abs((this.settings.estimatedMonthlySpendUsd || 0) - loggedSpend) > 1e-6) {
+      this.settings.estimatedMonthlySpendUsd = loggedSpend;
+      await this.saveSettings();
+    }
+  }
+  async readBudgetLogTotal(month) {
+    try {
+      const root = this.normalizeFolder(this.settings.workspaceFolder, DEFAULT_SETTINGS.workspaceFolder);
+      const filePath = `${root}/logs/budget-${month}.jsonl`;
+      const existing = this.app.vault.getAbstractFileByPath(filePath);
+      if (!(existing instanceof import_obsidian6.TFile))
+        return 0;
+      const text = await this.app.vault.cachedRead(existing);
+      const total = text.split("\n").map((line) => line.trim()).filter(Boolean).reduce((sum, line) => {
+        try {
+          const entry = JSON.parse(line);
+          if (entry.month && entry.month !== month)
+            return sum;
+          if (entry.type && entry.type !== "chat")
+            return sum;
+          return sum + Number(entry.estimatedCostUsd || 0);
+        } catch (e) {
+          return sum;
+        }
+      }, 0);
+      return Number(total.toFixed(6));
+    } catch (error) {
+      console.warn("Failed to read budget usage log:", error);
+      return 0;
     }
   }
   estimateGeminiCost(model, inputTokens, outputTokens) {

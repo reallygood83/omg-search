@@ -32,6 +32,7 @@ export default class GeminiSyncPlugin extends Plugin {
 		this.syncEngine = new SyncEngine(this, this.geminiService);
 		this.agentService = new AgentService(this);
 		await this.ensureDefaultWorkspaceFolders();
+		await this.reconcileBudgetFromLog();
 
 		// Register chat view
 		this.registerView(
@@ -145,17 +146,15 @@ export default class GeminiSyncPlugin extends Plugin {
 			this.settings.estimatedMonthlySpendUsd = 0;
 		}
 
-		this.settings.estimatedMonthlySpendUsd = Number((
-			(this.settings.estimatedMonthlySpendUsd || 0) + event.estimatedCostUsd
-		).toFixed(6));
-		await this.saveSettings();
+		const loggedSpend = await this.readBudgetLogTotal(month);
+		const estimatedMonthlySpendUsd = Number((loggedSpend + event.estimatedCostUsd).toFixed(6));
 
 		const logEntry = {
 			timestamp: new Date().toISOString(),
 			month,
 			...event,
 			monthlyBudgetUsd: this.settings.monthlyBudgetUsd,
-			estimatedMonthlySpendUsd: this.settings.estimatedMonthlySpendUsd
+			estimatedMonthlySpendUsd
 		};
 
 		try {
@@ -168,8 +167,57 @@ export default class GeminiSyncPlugin extends Plugin {
 			} else {
 				await this.app.vault.create(filePath, line);
 			}
+			this.settings.estimatedMonthlySpendUsd = estimatedMonthlySpendUsd;
+			await this.saveSettings();
 		} catch (error) {
 			console.warn('Failed to write budget usage log:', error);
+			this.settings.estimatedMonthlySpendUsd = Number((
+				(this.settings.estimatedMonthlySpendUsd || 0) + event.estimatedCostUsd
+			).toFixed(6));
+			await this.saveSettings();
+		}
+	}
+
+	async reconcileBudgetFromLog() {
+		const month = this.getCurrentBudgetMonth();
+		if (this.settings.estimatedMonthlySpendMonth !== month) {
+			this.settings.estimatedMonthlySpendMonth = month;
+			this.settings.estimatedMonthlySpendUsd = 0;
+		}
+
+		const loggedSpend = await this.readBudgetLogTotal(month);
+		if (loggedSpend > 0 && Math.abs((this.settings.estimatedMonthlySpendUsd || 0) - loggedSpend) > 0.000001) {
+			this.settings.estimatedMonthlySpendUsd = loggedSpend;
+			await this.saveSettings();
+		}
+	}
+
+	private async readBudgetLogTotal(month: string): Promise<number> {
+		try {
+			const root = this.normalizeFolder(this.settings.workspaceFolder, DEFAULT_SETTINGS.workspaceFolder);
+			const filePath = `${root}/logs/budget-${month}.jsonl`;
+			const existing = this.app.vault.getAbstractFileByPath(filePath);
+			if (!(existing instanceof TFile)) return 0;
+
+			const text = await this.app.vault.cachedRead(existing);
+			const total = text
+				.split('\n')
+				.map(line => line.trim())
+				.filter(Boolean)
+				.reduce((sum, line) => {
+					try {
+						const entry = JSON.parse(line);
+						if (entry.month && entry.month !== month) return sum;
+						if (entry.type && entry.type !== 'chat') return sum;
+						return sum + Number(entry.estimatedCostUsd || 0);
+					} catch {
+						return sum;
+					}
+				}, 0);
+			return Number(total.toFixed(6));
+		} catch (error) {
+			console.warn('Failed to read budget usage log:', error);
+			return 0;
 		}
 	}
 
