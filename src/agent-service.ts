@@ -143,6 +143,7 @@ export class AgentService {
 	private async buildPrompt(prompt: string): Promise<string> {
 		const activeFile = this.plugin.app.workspace.getActiveFile();
 		const workspaceFolder = this.plugin.settings.workspaceFolder;
+		const agentOutputFolder = await this.plugin.ensureVaultFolder(this.plugin.settings.agentOutputFolder);
 		const trustMode = this.plugin.settings.agentPermissionMode;
 		const scope = this.plugin.settings.syncFolders.join(', ') || 'No sync folders selected';
 		const webSearch = this.plugin.settings.agentWebSearchEnabled;
@@ -166,6 +167,8 @@ export class AgentService {
 			`Trust mode: ${trustMode}.`,
 			`Web search mode: ${webSearch ? 'enabled' : 'disabled'}.`,
 			`Workspace folder for generated artifacts: ${workspaceFolder}.`,
+			`Agent output folder for generated notes: ${agentOutputFolder}.`,
+			'If you create a note file, save it inside the Agent output folder and include its vault-relative markdown link in the response. If you only draft text in chat, do not claim that a file was saved.',
 			`Selected knowledge folders: ${scope}.`,
 			activeFile ? `Active note path: ${activeFile.path}.` : 'No active note is open.',
 			activeNoteContent ? `Active note content excerpt:\n${activeNoteContent}` : '',

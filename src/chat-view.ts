@@ -478,6 +478,7 @@ export class ChatView extends ItemView {
 				result.contextStats.truncatedByBudget ? ' (trimmed to fit the Agent prompt).' : '.'
 			].join('')
 			: '';
+		const savedNotePath = this.extractVaultNotePath(result.content);
 		return {
 			role: 'model',
 			content: [
@@ -490,7 +491,8 @@ export class ChatView extends ItemView {
 				result.logPath ? `Agent log: [[${result.logPath}]]` : '',
 				result.agyLogPath ? `AGY log: [[${result.agyLogPath}]]` : '',
 				result.exitCode === 0 ? '' : `Exit code: ${result.exitCode ?? 'unknown'}`
-			].filter(Boolean).join('\n')
+			].filter(Boolean).join('\n'),
+			savedNotePath: savedNotePath || undefined
 		};
 	}
 
@@ -519,6 +521,7 @@ export class ChatView extends ItemView {
 
 		// Process citation links
 		this.processCitationLinks(contentEl);
+		this.processVaultFileLinks(contentEl);
 
 		// Render citations if present
 		if (message.citations && message.citations.length > 0) {
@@ -622,6 +625,56 @@ export class ChatView extends ItemView {
 				textNode.parentNode?.replaceChild(span, textNode);
 			}
 		}
+	}
+
+	private processVaultFileLinks(container: HTMLElement) {
+		const links = Array.from(container.querySelectorAll('a[href]')) as HTMLAnchorElement[];
+		for (const link of links) {
+			const vaultPath = this.extractVaultNotePath(link.href);
+			if (!vaultPath) continue;
+			link.addClass('gemini-chat-inline-citation');
+			link.setAttr('href', '#');
+			link.addEventListener('click', async (event) => {
+				event.preventDefault();
+				await this.app.workspace.openLinkText(vaultPath, '', true);
+			});
+		}
+	}
+
+	private extractVaultNotePath(text: string): string | null {
+		const vaultRoot = this.plugin.getVaultPath().replace(/\\/g, '/').replace(/\/+$/g, '');
+		const candidates: string[] = [];
+		const markdownFileUrl = /\]\((file:\/\/[^)]+?\.md)\)/g;
+		const bareFileUrl = /file:\/\/[^\s)]+?\.md/g;
+		let match: RegExpExecArray | null;
+
+		while ((match = markdownFileUrl.exec(text)) !== null) candidates.push(match[1]);
+		while ((match = bareFileUrl.exec(text)) !== null) candidates.push(match[0]);
+		candidates.push(text);
+
+		for (const candidate of candidates) {
+			const absolutePath = this.toAbsoluteVaultCandidate(candidate);
+			if (!absolutePath || !absolutePath.startsWith(`${vaultRoot}/`)) continue;
+			const relativePath = decodeURIComponent(absolutePath.slice(vaultRoot.length + 1));
+			const file = this.app.vault.getAbstractFileByPath(relativePath);
+			if (file instanceof TFile && file.extension === 'md') return file.path;
+		}
+		return null;
+	}
+
+	private toAbsoluteVaultCandidate(candidate: string): string | null {
+		const trimmed = candidate.trim().replace(/^["']|["']$/g, '');
+		try {
+			if (trimmed.startsWith('file://')) {
+				return decodeURIComponent(new URL(trimmed).pathname).replace(/\\/g, '/');
+			}
+		} catch {
+			return null;
+		}
+		if (trimmed.startsWith(this.plugin.getVaultPath())) {
+			return trimmed.replace(/\\/g, '/');
+		}
+		return null;
 	}
 
 	private async openNote(path: string) {

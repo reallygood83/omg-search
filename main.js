@@ -3005,6 +3005,7 @@ var ChatView = class extends import_obsidian4.ItemView {
       `${result.contextStats.loadedExcerptNotes} relevant note excerpts loaded into this Agent run`,
       result.contextStats.truncatedByBudget ? " (trimmed to fit the Agent prompt)." : "."
     ].join("") : "";
+    const savedNotePath = this.extractVaultNotePath(result.content);
     return {
       role: "model",
       content: [
@@ -3017,7 +3018,8 @@ var ChatView = class extends import_obsidian4.ItemView {
         result.logPath ? `Agent log: [[${result.logPath}]]` : "",
         result.agyLogPath ? `AGY log: [[${result.agyLogPath}]]` : "",
         result.exitCode === 0 ? "" : `Exit code: ${(_a = result.exitCode) != null ? _a : "unknown"}`
-      ].filter(Boolean).join("\n")
+      ].filter(Boolean).join("\n"),
+      savedNotePath: savedNotePath || void 0
     };
   }
   renderMessage(message) {
@@ -3035,6 +3037,7 @@ var ChatView = class extends import_obsidian4.ItemView {
       this
     );
     this.processCitationLinks(contentEl);
+    this.processVaultFileLinks(contentEl);
     if (message.citations && message.citations.length > 0) {
       const citationsEl = contentWrapper.createDiv({ cls: "gemini-chat-citations" });
       citationsEl.createEl("div", { cls: "gemini-chat-citations-label", text: "\u{1F4CE} Sources:" });
@@ -3118,6 +3121,56 @@ var ChatView = class extends import_obsidian4.ItemView {
         (_a = textNode.parentNode) == null ? void 0 : _a.replaceChild(span, textNode);
       }
     }
+  }
+  processVaultFileLinks(container) {
+    const links = Array.from(container.querySelectorAll("a[href]"));
+    for (const link of links) {
+      const vaultPath = this.extractVaultNotePath(link.href);
+      if (!vaultPath)
+        continue;
+      link.addClass("gemini-chat-inline-citation");
+      link.setAttr("href", "#");
+      link.addEventListener("click", async (event) => {
+        event.preventDefault();
+        await this.app.workspace.openLinkText(vaultPath, "", true);
+      });
+    }
+  }
+  extractVaultNotePath(text) {
+    const vaultRoot = this.plugin.getVaultPath().replace(/\\/g, "/").replace(/\/+$/g, "");
+    const candidates = [];
+    const markdownFileUrl = /\]\((file:\/\/[^)]+?\.md)\)/g;
+    const bareFileUrl = /file:\/\/[^\s)]+?\.md/g;
+    let match;
+    while ((match = markdownFileUrl.exec(text)) !== null)
+      candidates.push(match[1]);
+    while ((match = bareFileUrl.exec(text)) !== null)
+      candidates.push(match[0]);
+    candidates.push(text);
+    for (const candidate of candidates) {
+      const absolutePath = this.toAbsoluteVaultCandidate(candidate);
+      if (!absolutePath || !absolutePath.startsWith(`${vaultRoot}/`))
+        continue;
+      const relativePath = decodeURIComponent(absolutePath.slice(vaultRoot.length + 1));
+      const file = this.app.vault.getAbstractFileByPath(relativePath);
+      if (file instanceof import_obsidian4.TFile && file.extension === "md")
+        return file.path;
+    }
+    return null;
+  }
+  toAbsoluteVaultCandidate(candidate) {
+    const trimmed = candidate.trim().replace(/^["']|["']$/g, "");
+    try {
+      if (trimmed.startsWith("file://")) {
+        return decodeURIComponent(new URL(trimmed).pathname).replace(/\\/g, "/");
+      }
+    } catch (e) {
+      return null;
+    }
+    if (trimmed.startsWith(this.plugin.getVaultPath())) {
+      return trimmed.replace(/\\/g, "/");
+    }
+    return null;
   }
   async openNote(path) {
     let cleanPath = path.trim();
@@ -3567,6 +3620,7 @@ ${message}`,
   async buildPrompt(prompt) {
     const activeFile = this.plugin.app.workspace.getActiveFile();
     const workspaceFolder = this.plugin.settings.workspaceFolder;
+    const agentOutputFolder = await this.plugin.ensureVaultFolder(this.plugin.settings.agentOutputFolder);
     const trustMode = this.plugin.settings.agentPermissionMode;
     const scope = this.plugin.settings.syncFolders.join(", ") || "No sync folders selected";
     const webSearch = this.plugin.settings.agentWebSearchEnabled;
@@ -3588,6 +3642,8 @@ ${message}`,
       `Trust mode: ${trustMode}.`,
       `Web search mode: ${webSearch ? "enabled" : "disabled"}.`,
       `Workspace folder for generated artifacts: ${workspaceFolder}.`,
+      `Agent output folder for generated notes: ${agentOutputFolder}.`,
+      "If you create a note file, save it inside the Agent output folder and include its vault-relative markdown link in the response. If you only draft text in chat, do not claim that a file was saved.",
       `Selected knowledge folders: ${scope}.`,
       activeFile ? `Active note path: ${activeFile.path}.` : "No active note is open.",
       activeNoteContent ? `Active note content excerpt:
