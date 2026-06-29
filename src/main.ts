@@ -31,6 +31,7 @@ export default class GeminiSyncPlugin extends Plugin {
 		this.geminiService = new GeminiService(this);
 		this.syncEngine = new SyncEngine(this, this.geminiService);
 		this.agentService = new AgentService(this);
+		await this.ensureDefaultWorkspaceFolders();
 
 		// Register chat view
 		this.registerView(
@@ -305,6 +306,15 @@ export default class GeminiSyncPlugin extends Plugin {
 		const root = this.normalizeFolder(this.settings.workspaceFolder, DEFAULT_SETTINGS.workspaceFolder);
 		const path = subfolder ? `${root}/${subfolder}` : root;
 		return this.ensureVaultFolder(path);
+	}
+
+	async ensureDefaultWorkspaceFolders() {
+		await this.ensureWorkspaceFolder('compiled');
+		await this.ensureVaultFolder(this.settings.agentOutputFolder || `${this.settings.workspaceFolder}/agent`);
+		await this.ensureWorkspaceFolder('graph');
+		await this.ensureWorkspaceFolder('inbox');
+		await this.ensureWorkspaceFolder('logs');
+		await this.ensureWorkspaceFolder('skills');
 	}
 
 	async ensureVaultFolder(folder: string): Promise<string> {

@@ -2870,7 +2870,7 @@ var ChatView = class extends import_obsidian4.ItemView {
   renderWorkspaceTab() {
     const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel" });
     panel.createEl("h3", { text: `${this.plugin.settings.workspaceFolder} workspace` });
-    panel.createEl("p", { text: "Generated Agent reports, compiled notes, graph JSON, and logs are kept separate from your source notes." });
+    panel.createEl("p", { text: "Generated Agent reports, compiled notes, graph JSON, Canvas maps, reports, and logs are kept separate from your source notes." });
     const folders = [
       `${this.plugin.settings.workspaceFolder}/compiled`,
       this.plugin.settings.agentOutputFolder,
@@ -2879,14 +2879,318 @@ var ChatView = class extends import_obsidian4.ItemView {
       `${this.plugin.settings.workspaceFolder}/logs`
     ];
     const list = panel.createEl("ul");
-    for (const folder of folders)
-      list.createEl("li", { text: folder });
+    for (const folder of folders) {
+      const exists = this.app.vault.getAbstractFileByPath(folder) ? "ready" : "missing";
+      list.createEl("li", { text: `${folder} (${exists})` });
+    }
     const createBtn = panel.createEl("button", { cls: "gemini-chat-action-btn", text: "Create workspace folders" });
     createBtn.addEventListener("click", async () => {
       for (const folder of folders)
         await this.plugin.ensureVaultFolder(folder);
       new import_obsidian4.Notice("Master of Knowledge workspace folders are ready.");
+      this.renderActiveTab();
     });
+    const graphBtn = panel.createEl("button", {
+      cls: "gemini-chat-action-btn",
+      text: "Build knowledge graph"
+    });
+    graphBtn.addEventListener("click", async () => {
+      graphBtn.setText("Building graph...");
+      graphBtn.setAttr("disabled", "true");
+      try {
+        const { jsonPath, canvasPath, reportPath, nodeCount, edgeCount, communityCount } = await this.buildKnowledgeGraphArtifacts();
+        new import_obsidian4.Notice(`Knowledge graph built: ${nodeCount} nodes, ${edgeCount} links, ${communityCount} communities`);
+        await this.app.workspace.openLinkText(canvasPath || jsonPath, "", true);
+      } catch (error) {
+        new import_obsidian4.Notice("Failed to build knowledge graph.");
+        console.error("Graph build error:", error);
+      } finally {
+        graphBtn.removeAttribute("disabled");
+        graphBtn.setText("Build knowledge graph");
+        this.renderActiveTab();
+      }
+    });
+  }
+  async buildKnowledgeGraphArtifacts() {
+    const graphFolder = await this.plugin.ensureWorkspaceFolder("graph");
+    const files = this.app.vault.getMarkdownFiles().filter((file) => this.isSyncedCitationFile(file));
+    const nodes = files.map((file) => {
+      var _a;
+      return {
+        id: file.path,
+        title: file.basename,
+        path: file.path,
+        folder: ((_a = file.parent) == null ? void 0 : _a.path) || "",
+        mtime: file.stat.mtime,
+        size: file.stat.size,
+        kind: "note"
+      };
+    });
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const edgeMap = /* @__PURE__ */ new Map();
+    const tags = /* @__PURE__ */ new Map();
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      const wikilinks = Array.from(content.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g)).map((match) => {
+        var _a;
+        return (_a = match[1]) == null ? void 0 : _a.trim();
+      }).filter((value) => !!value);
+      for (const link of wikilinks) {
+        const target = this.app.metadataCache.getFirstLinkpathDest(link, file.path);
+        if (!target || !nodeIds.has(target.path))
+          continue;
+        const id = `${file.path}->${target.path}`;
+        edgeMap.set(id, { id, from: file.path, to: target.path, type: "wikilink", confidence: "EXTRACTED", confidenceScore: 1 });
+      }
+      const noteTags = new Set(
+        Array.from(content.matchAll(/(^|\s)#([\p{L}\p{N}_/-]+)/gu)).map((match) => match[2]).filter((tag) => !!tag && !/^\d+$/.test(tag))
+      );
+      for (const tag of Array.from(noteTags).slice(0, 20)) {
+        const tagId = `tag:${tag}`;
+        if (!tags.has(tagId)) {
+          tags.set(tagId, {
+            id: tagId,
+            title: `#${tag}`,
+            path: tagId,
+            folder: "tags",
+            mtime: 0,
+            size: 0,
+            kind: "tag"
+          });
+        }
+        const id = `${file.path}->${tagId}`;
+        edgeMap.set(id, { id, from: file.path, to: tagId, type: "tag", label: `#${tag}`, confidence: "EXTRACTED", confidenceScore: 1 });
+      }
+    }
+    const allNodes = [...nodes, ...Array.from(tags.values())];
+    const allEdges = Array.from(edgeMap.values());
+    const analytics = this.analyzeKnowledgeGraph(allNodes, allEdges);
+    for (const node of allNodes) {
+      node.degree = analytics.degree.get(node.id) || 0;
+      node.pageRank = analytics.pageRank.get(node.id) || 0;
+      node.community = analytics.communities.get(node.id) || 0;
+    }
+    const graph = {
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      vault: this.plugin.getVaultPath(),
+      syncFolders: this.plugin.settings.syncFolders,
+      description: "Graphify-lite vault graph built from synced Obsidian wikilinks and tags. Edges are deterministic EXTRACTED links, not LLM-inferred semantic relations.",
+      metrics: {
+        nodes: allNodes.length,
+        noteNodes: nodes.length,
+        tagNodes: tags.size,
+        edges: allEdges.length,
+        communities: analytics.communityCount
+      },
+      nodes: allNodes,
+      edges: allEdges
+    };
+    const jsonPath = `${graphFolder}/knowledge-graph.json`;
+    await this.writeVaultFile(jsonPath, JSON.stringify(graph, null, 2));
+    const canvasPath = `${graphFolder}/knowledge-graph.canvas`;
+    await this.writeVaultFile(canvasPath, JSON.stringify(this.buildGraphCanvas(graph.nodes, graph.edges), null, 2));
+    const reportPath = `${graphFolder}/GRAPH_REPORT.md`;
+    await this.writeVaultFile(reportPath, this.buildGraphReport(graph.nodes, graph.edges, analytics.communityCount));
+    return {
+      jsonPath,
+      canvasPath,
+      reportPath,
+      nodeCount: graph.nodes.length,
+      edgeCount: graph.edges.length,
+      communityCount: analytics.communityCount
+    };
+  }
+  buildGraphCanvas(nodes, edges) {
+    const selected = nodes.filter((node) => node.kind !== "tag").sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0) || (b.degree || 0) - (a.degree || 0) || a.title.localeCompare(b.title)).slice(0, 120);
+    const selectedIds = new Set(selected.map((node) => node.id));
+    const tagNodes = nodes.filter((node) => node.kind === "tag" && (node.degree || 0) > 1).sort((a, b) => (b.degree || 0) - (a.degree || 0)).slice(0, 30);
+    for (const node of tagNodes)
+      selectedIds.add(node.id);
+    const canvasNodes = [...selected, ...tagNodes].map((node, index) => {
+      const col = index % 10;
+      const row = Math.floor(index / 10);
+      const isTag = node.kind === "tag";
+      return {
+        id: node.id,
+        type: isTag ? "text" : "file",
+        x: col * 360,
+        y: row * 220,
+        width: 300,
+        height: isTag ? 80 : 160,
+        color: this.communityCanvasColor(node.community || 0),
+        ...isTag ? { text: node.title } : { file: node.path }
+      };
+    });
+    const canvasEdges = edges.filter((edge) => selectedIds.has(edge.from) && selectedIds.has(edge.to)).slice(0, 400).map((edge) => ({
+      id: edge.id,
+      fromNode: edge.from,
+      toNode: edge.to,
+      label: edge.type === "tag" ? "tag" : ""
+    }));
+    return { nodes: canvasNodes, edges: canvasEdges };
+  }
+  analyzeKnowledgeGraph(nodes, edges) {
+    var _a;
+    const adjacency = this.buildGraphAdjacency(nodes, edges);
+    const degree = /* @__PURE__ */ new Map();
+    for (const node of nodes)
+      degree.set(node.id, ((_a = adjacency.get(node.id)) == null ? void 0 : _a.size) || 0);
+    const pageRank = this.computePageRank(nodes, adjacency);
+    const communities = this.computeLabelPropagation(nodes, adjacency);
+    const communityCount = new Set(communities.values()).size;
+    return { degree, pageRank, communities, communityCount };
+  }
+  buildGraphAdjacency(nodes, edges) {
+    const adjacency = /* @__PURE__ */ new Map();
+    for (const node of nodes)
+      adjacency.set(node.id, /* @__PURE__ */ new Set());
+    for (const edge of edges) {
+      if (!adjacency.has(edge.from) || !adjacency.has(edge.to) || edge.from === edge.to)
+        continue;
+      adjacency.get(edge.from).add(edge.to);
+      adjacency.get(edge.to).add(edge.from);
+    }
+    return adjacency;
+  }
+  computePageRank(nodes, adjacency) {
+    const count = nodes.length;
+    const scores = /* @__PURE__ */ new Map();
+    if (count === 0)
+      return scores;
+    for (const node of nodes)
+      scores.set(node.id, 1 / count);
+    let current = scores;
+    for (let i = 0; i < 30; i++) {
+      const next = /* @__PURE__ */ new Map();
+      for (const node of nodes)
+        next.set(node.id, 0.15 / count);
+      for (const node of nodes) {
+        const neighbors = adjacency.get(node.id) || /* @__PURE__ */ new Set();
+        if (neighbors.size === 0)
+          continue;
+        const share = (current.get(node.id) || 0) * 0.85 / neighbors.size;
+        for (const neighbor of neighbors)
+          next.set(neighbor, (next.get(neighbor) || 0) + share);
+      }
+      current = next;
+    }
+    const values = Array.from(current.values());
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = Math.max(max - min, 1e-9);
+    for (const [id, value] of current.entries())
+      current.set(id, (value - min) / range);
+    return current;
+  }
+  computeLabelPropagation(nodes, adjacency) {
+    const labels = /* @__PURE__ */ new Map();
+    nodes.forEach((node, index) => labels.set(node.id, index));
+    const order = nodes.map((node) => node.id).sort();
+    for (let iter = 0; iter < 20; iter++) {
+      let changed = false;
+      for (const id of order) {
+        const neighbors = adjacency.get(id);
+        if (!neighbors || neighbors.size === 0)
+          continue;
+        const counts = /* @__PURE__ */ new Map();
+        for (const neighbor of neighbors) {
+          const label = labels.get(neighbor);
+          if (label === void 0)
+            continue;
+          counts.set(label, (counts.get(label) || 0) + 1);
+        }
+        let bestLabel = labels.get(id) || 0;
+        let bestCount = -1;
+        for (const [label, count] of counts.entries()) {
+          if (count > bestCount || count === bestCount && label < bestLabel) {
+            bestLabel = label;
+            bestCount = count;
+          }
+        }
+        if (labels.get(id) !== bestLabel) {
+          labels.set(id, bestLabel);
+          changed = true;
+        }
+      }
+      if (!changed)
+        break;
+    }
+    const sizes = /* @__PURE__ */ new Map();
+    for (const label of labels.values())
+      sizes.set(label, (sizes.get(label) || 0) + 1);
+    const remap = /* @__PURE__ */ new Map();
+    Array.from(sizes.entries()).sort((a, b) => b[1] - a[1]).forEach(([label], index) => remap.set(label, index));
+    for (const [id, label] of labels.entries())
+      labels.set(id, remap.get(label) || 0);
+    return labels;
+  }
+  buildGraphReport(nodes, edges, communityCount) {
+    const notes = nodes.filter((node) => node.kind === "note");
+    const tags = nodes.filter((node) => node.kind === "tag");
+    const hubs = [...nodes].filter((node) => node.degree && node.degree > 0).sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0) || (b.degree || 0) - (a.degree || 0)).slice(0, 12);
+    const communities = /* @__PURE__ */ new Map();
+    for (const node of nodes) {
+      const community = node.community || 0;
+      const list = communities.get(community) || [];
+      list.push(node);
+      communities.set(community, list);
+    }
+    const communityLines = Array.from(communities.entries()).sort((a, b) => b[1].length - a[1].length).slice(0, 12).map(([community, members]) => {
+      const examples = members.sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0)).slice(0, 5).map((node) => node.title).join(", ");
+      return `- Community ${community}: ${members.length} nodes \u2014 ${examples}`;
+    });
+    const hubLines = hubs.map((node) => {
+      const rank = ((node.pageRank || 0) * 100).toFixed(1);
+      return `- ${node.title} \u2014 PageRank ${rank}, degree ${node.degree || 0}, community ${node.community || 0}`;
+    });
+    return [
+      "# Master of Knowledge Graph Report",
+      "",
+      `Generated: ${new Date().toISOString()}`,
+      "",
+      "## Scope",
+      "",
+      `- Notes: ${notes.length}`,
+      `- Tags: ${tags.length}`,
+      `- Edges: ${edges.length}`,
+      `- Communities: ${communityCount}`,
+      "",
+      "## Method",
+      "",
+      "- Source corpus: only notes selected by Sync Folders.",
+      "- Edges: Obsidian wikilinks and tags only.",
+      "- Confidence: all edges are marked EXTRACTED because they come from explicit note syntax.",
+      "- Analytics: lightweight PageRank and Label Propagation community detection inspired by Alda graphify.",
+      "",
+      "## Hub Nodes",
+      "",
+      hubLines.length ? hubLines.join("\n") : "- No connected hubs yet. Add wikilinks or tags between synced notes.",
+      "",
+      "## Communities",
+      "",
+      communityLines.length ? communityLines.join("\n") : "- No communities detected yet.",
+      "",
+      "## Honest Limits",
+      "",
+      "- This is graphify-lite, not a full semantic entity graph yet.",
+      "- It does not extract entities/concepts with an LLM.",
+      "- It does not create INFERRED or AMBIGUOUS semantic edges.",
+      "- It does not yet include a Cytoscape-style interactive dashboard.",
+      ""
+    ].join("\n");
+  }
+  communityCanvasColor(community) {
+    const colors = ["1", "2", "3", "4", "5", "6"];
+    return colors[community % colors.length];
+  }
+  async writeVaultFile(path, content) {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing instanceof import_obsidian4.TFile) {
+      await this.app.vault.modify(existing, content);
+    } else {
+      await this.app.vault.create(path, content);
+    }
   }
   renderSettingsTab() {
     const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel" });
@@ -4174,6 +4478,7 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
     this.geminiService = new GeminiService(this);
     this.syncEngine = new SyncEngine(this, this.geminiService);
     this.agentService = new AgentService(this);
+    await this.ensureDefaultWorkspaceFolders();
     this.registerView(
       CHAT_VIEW_TYPE,
       (leaf) => new ChatView(leaf, this)
@@ -4388,6 +4693,14 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
     const root = this.normalizeFolder(this.settings.workspaceFolder, DEFAULT_SETTINGS.workspaceFolder);
     const path = subfolder ? `${root}/${subfolder}` : root;
     return this.ensureVaultFolder(path);
+  }
+  async ensureDefaultWorkspaceFolders() {
+    await this.ensureWorkspaceFolder("compiled");
+    await this.ensureVaultFolder(this.settings.agentOutputFolder || `${this.settings.workspaceFolder}/agent`);
+    await this.ensureWorkspaceFolder("graph");
+    await this.ensureWorkspaceFolder("inbox");
+    await this.ensureWorkspaceFolder("logs");
+    await this.ensureWorkspaceFolder("skills");
   }
   async ensureVaultFolder(folder) {
     const path = this.normalizeFolder(folder);
