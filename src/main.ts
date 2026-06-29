@@ -115,12 +115,20 @@ export default class GeminiSyncPlugin extends Plugin {
 			this.settings.estimatedMonthlySpendUsd = 0;
 		}
 		this.settings.agentCliPath = this.settings.agentCliPath || DEFAULT_SETTINGS.agentCliPath;
+		this.settings.agentModel = this.settings.agentModel || DEFAULT_SETTINGS.agentModel;
 		this.settings.agentPermissionMode = this.settings.agentPermissionMode || DEFAULT_SETTINGS.agentPermissionMode;
 		this.settings.agentTimeoutSeconds = this.settings.agentTimeoutSeconds || DEFAULT_SETTINGS.agentTimeoutSeconds;
 		this.settings.agentEnvironment = this.settings.agentEnvironment || DEFAULT_SETTINGS.agentEnvironment;
 		this.settings.agentWebSearchEnabled = typeof this.settings.agentWebSearchEnabled === 'boolean'
 			? this.settings.agentWebSearchEnabled
 			: DEFAULT_SETTINGS.agentWebSearchEnabled;
+		this.settings.agentUseObsidianSkill = typeof this.settings.agentUseObsidianSkill === 'boolean'
+			? this.settings.agentUseObsidianSkill
+			: DEFAULT_SETTINGS.agentUseObsidianSkill;
+		this.settings.agentObsidianSkillPath = this.normalizeFolder(
+			this.settings.agentObsidianSkillPath || DEFAULT_SETTINGS.agentObsidianSkillPath,
+			DEFAULT_SETTINGS.agentObsidianSkillPath
+		);
 	}
 
 	async saveSettings() {
@@ -310,6 +318,50 @@ export default class GeminiSyncPlugin extends Plugin {
 			}
 		}
 		return path;
+	}
+
+	async installObsidianWritingSkill(): Promise<string> {
+		const skillPath = this.normalizeFolder(
+			this.settings.agentObsidianSkillPath || DEFAULT_SETTINGS.agentObsidianSkillPath,
+			DEFAULT_SETTINGS.agentObsidianSkillPath
+		);
+		const folder = skillPath.split('/').slice(0, -1).join('/');
+		if (folder) await this.ensureVaultFolder(folder);
+
+		const content = [
+			'# Obsidian Writing Skill',
+			'',
+			'Use this skill whenever the user asks the Agent to write, compile, summarize, or create an Obsidian note.',
+			'',
+			'## Output Contract',
+			'- Write valid Markdown that opens cleanly in Obsidian.',
+			'- Prefer clear headings, short paragraphs, tables only when they improve scanning, and actionable checklists.',
+			'- Use wiki links like [[Note Title]] only when the target note exists or when creating a deliberate new note.',
+			'- Keep generated notes inside the configured Agent output folder.',
+			'- When a note file is created, return its vault-relative path and a markdown link to that path.',
+			'- Do not claim a file was saved unless the file was actually written.',
+			'',
+			'## Source Discipline',
+			'- Cite vault note paths when using synced note evidence.',
+			'- Separate note-grounded claims from general suggestions.',
+			'- If evidence is weak or missing, say so plainly.',
+			'',
+			'## Korean Notes',
+			'- If the user writes Korean, answer in natural Korean.',
+			'- Avoid stiff translation tone; write as a practical Obsidian note the user can keep.'
+		].join('\n');
+
+		const existing = this.app.vault.getAbstractFileByPath(skillPath);
+		if (existing instanceof TFile) {
+			await this.app.vault.modify(existing, content);
+		} else {
+			await this.app.vault.create(skillPath, content);
+		}
+
+		this.settings.agentObsidianSkillPath = skillPath;
+		this.settings.agentUseObsidianSkill = true;
+		await this.saveSettings();
+		return skillPath;
 	}
 
 	openPluginSettings() {

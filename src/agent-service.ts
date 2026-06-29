@@ -131,6 +131,10 @@ export class AgentService {
 			`${timeoutSeconds}s`
 		];
 
+		if (this.plugin.settings.agentModel) {
+			args.push('--model', this.plugin.settings.agentModel);
+		}
+
 		if (this.plugin.settings.agentPermissionMode === 'auto' ||
 			this.plugin.settings.agentPermissionMode === 'yolo') {
 			args.push('--dangerously-skip-permissions');
@@ -147,6 +151,7 @@ export class AgentService {
 		const trustMode = this.plugin.settings.agentPermissionMode;
 		const scope = this.plugin.settings.syncFolders.join(', ') || 'No sync folders selected';
 		const webSearch = this.plugin.settings.agentWebSearchEnabled;
+		const obsidianSkill = await this.getObsidianSkillContext();
 		const syncedNotes = await this.buildSyncedNotesContext(prompt);
 		this.lastContextStats = syncedNotes.stats;
 		let activeNoteContent = '';
@@ -170,6 +175,7 @@ export class AgentService {
 			`Agent output folder for generated notes: ${agentOutputFolder}.`,
 			'All generated files must stay inside the current Obsidian vault. Treat the Agent output folder as a vault-relative path, not an external filesystem destination.',
 			'If you create a note file, save it inside the Agent output folder and include its vault-relative markdown link in the response. If you only draft text in chat, do not claim that a file was saved.',
+			obsidianSkill,
 			`Selected knowledge folders: ${scope}.`,
 			activeFile ? `Active note path: ${activeFile.path}.` : 'No active note is open.',
 			activeNoteContent ? `Active note content excerpt:\n${activeNoteContent}` : '',
@@ -188,6 +194,31 @@ export class AgentService {
 			'User request:',
 			prompt
 		].join('\n');
+	}
+
+	private async getObsidianSkillContext(): Promise<string> {
+		if (!this.plugin.settings.agentUseObsidianSkill) return '';
+		const path = this.plugin.normalizeFolder(
+			this.plugin.settings.agentObsidianSkillPath || '_omg/skills/obsidian-writing-skill.md',
+			'_omg/skills/obsidian-writing-skill.md'
+		);
+		const file = this.plugin.app.vault.getAbstractFileByPath(path);
+		if (!(file instanceof TFile)) {
+			return [
+				'Obsidian writing skill is enabled, but the skill file is not installed yet.',
+				'Default behavior: write valid Obsidian Markdown, save generated notes inside the Agent output folder, return vault-relative note links, and do not claim a save unless the file exists.'
+			].join('\n');
+		}
+		try {
+			const content = await this.plugin.app.vault.read(file);
+			return [
+				'Obsidian writing skill loaded. Follow it by default for note-writing tasks:',
+				`--- ${path} ---`,
+				content.length > 5000 ? `${content.slice(0, 5000)}\n...[skill truncated]` : content
+			].join('\n');
+		} catch {
+			return '';
+		}
 	}
 
 	private async buildSyncedNotesContext(prompt: string): Promise<{ context: string; stats: AgentContextStats }> {
@@ -474,22 +505,32 @@ export class AgentService {
 		return env;
 	}
 
+	detectAgentCliPath(): string | null {
+		return this.resolveCommand('agy');
+	}
+
 	private resolveCommand(command: string): string | null {
 		if (isAbsolute(command) || command.includes('/') || command.includes('\\')) {
 			return existsSync(command) ? command : null;
 		}
 
-		const paths = [
+		const paths = Array.from(new Set([
 			...(process.env.PATH || '').split(delimiter),
 			join(homedir(), '.local', 'bin'),
 			join(homedir(), '.antigravity', 'antigravity', 'bin'),
 			join(homedir(), '.antigravity-ide', 'antigravity-ide', 'bin'),
+			join(homedir(), '.antigravity', 'bin'),
+			join(homedir(), '.antigravity-ide', 'bin'),
+			...(process.platform === 'win32' ? this.getWindowsAgentSearchPaths() : []),
 			'/opt/homebrew/bin',
 			'/usr/local/bin',
 			'/usr/bin',
 			'/bin'
-		].filter(Boolean);
-		const extensions = process.platform === 'win32' ? ['', '.exe', '.cmd', '.bat'] : [''];
+		].filter(Boolean)));
+		const extensions = process.platform === 'win32'
+			? Array.from(new Set(['', ...(process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')]))
+				.map(ext => ext.toLowerCase())
+			: [''];
 
 		for (const dir of paths) {
 			for (const ext of extensions) {
@@ -500,12 +541,44 @@ export class AgentService {
 		return null;
 	}
 
+	private getWindowsAgentSearchPaths(): string[] {
+		const env = process.env;
+		const roots = [
+			env.LOCALAPPDATA,
+			env.APPDATA,
+			env.USERPROFILE,
+			env.ProgramFiles,
+			env['ProgramFiles(x86)']
+		].filter((value): value is string => !!value);
+
+		const suffixes = [
+			['Programs', 'Antigravity', 'bin'],
+			['Programs', 'Antigravity'],
+			['Antigravity', 'bin'],
+			['Antigravity'],
+			['Google', 'Antigravity', 'bin'],
+			['Google', 'Antigravity'],
+			['.local', 'bin'],
+			['AppData', 'Roaming', 'npm']
+		];
+
+		const paths: string[] = [];
+		for (const root of roots) {
+			for (const suffix of suffixes) {
+				paths.push(join(root, ...suffix));
+			}
+		}
+		return paths;
+	}
+
 	private getMissingCommandMessage(command: string): string {
 		return [
 			`Could not find the Agent CLI command "${command}".`,
 			'If Obsidian was opened from Finder, Dock, or Start Menu, it may not inherit your shell PATH.',
-			'Open Settings > Master of Knowledge > Agent Workspace and set Antigravity CLI Path to the full command path.',
-			`On this Mac it is often: ${homedir()}/.local/bin/agy`
+			'Open Settings > Master of Knowledge > Agent Workspace and click Auto-detect, or set Antigravity CLI Path to the full command path.',
+			process.platform === 'win32'
+				? 'On Windows it is often agy.exe in PATH, %LOCALAPPDATA%\\Programs\\Antigravity, or %APPDATA%\\npm.'
+				: `On macOS it is often: ${homedir()}/.local/bin/agy`
 		].join('\n');
 	}
 }

@@ -19,10 +19,13 @@ export interface GeminiSyncSettings {
 	estimatedMonthlySpendUsd: number;
 	estimatedMonthlySpendMonth: string;
 	agentCliPath: string;
+	agentModel: string;
 	agentPermissionMode: 'review' | 'auto' | 'yolo';
 	agentTimeoutSeconds: number;
 	agentEnvironment: string;
 	agentWebSearchEnabled: boolean;
+	agentUseObsidianSkill: boolean;
+	agentObsidianSkillPath: string;
 	corpusName: string;
 	corpusDisplayName: string;
 	autoSync: boolean;
@@ -42,10 +45,13 @@ export const DEFAULT_SETTINGS: GeminiSyncSettings = {
 	estimatedMonthlySpendUsd: 0,
 	estimatedMonthlySpendMonth: '',
 	agentCliPath: 'agy',
+	agentModel: '',
 	agentPermissionMode: 'review',
 	agentTimeoutSeconds: 60,
 	agentEnvironment: '',
 	agentWebSearchEnabled: false,
+	agentUseObsidianSkill: true,
+	agentObsidianSkillPath: '_omg/skills/obsidian-writing-skill.md',
 	corpusName: '',
 	corpusDisplayName: 'Obsidian Vault',
 	autoSync: true,
@@ -204,13 +210,51 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 			.setName('Antigravity CLI Path')
 			.setDesc('Path or command used by the Agent tab. Use a full path if Obsidian cannot find agy from your shell PATH.')
 			.addText(text => text
-				.setPlaceholder('/Users/you/.local/bin/agy')
+				.setPlaceholder(process.platform === 'win32' ? 'agy.exe' : '/Users/you/.local/bin/agy')
 				.setValue(this.plugin.settings.agentCliPath)
 				.onChange(async (value) => {
 					this.plugin.settings.agentCliPath = value.trim() || 'agy';
 					await this.plugin.saveSettings();
 				})
 			);
+
+		new Setting(containerEl)
+			.setName('Find Antigravity CLI')
+			.setDesc('Auto-detect agy from PATH and common macOS/Windows install locations.')
+			.addButton(button => button
+				.setButtonText('Auto-detect')
+				.onClick(async () => {
+					const found = this.plugin.agentService.detectAgentCliPath();
+					if (!found) {
+						new Notice('Could not find agy. Install Antigravity CLI or set the full path manually.');
+						return;
+					}
+					this.plugin.settings.agentCliPath = found;
+					await this.plugin.saveSettings();
+					new Notice(`Antigravity CLI found: ${found}`);
+					this.display();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('AGY Model')
+			.setDesc('Model passed to agy with --model. Leave Auto to use the AGY default.')
+			.addDropdown(dropdown => {
+				dropdown.addOption('', 'Auto / AGY default');
+				dropdown.addOption('Gemini 3.5 Flash (Medium)', 'Gemini 3.5 Flash (Medium)');
+				dropdown.addOption('Gemini 3.5 Flash (High)', 'Gemini 3.5 Flash (High)');
+				dropdown.addOption('Gemini 3.5 Flash (Low)', 'Gemini 3.5 Flash (Low)');
+				dropdown.addOption('Gemini 3.1 Pro (High)', 'Gemini 3.1 Pro (High)');
+				dropdown.addOption('Gemini 3.1 Pro (Low)', 'Gemini 3.1 Pro (Low)');
+				dropdown.addOption('Claude Sonnet 4.6 (Thinking)', 'Claude Sonnet 4.6 (Thinking)');
+				dropdown.addOption('Claude Opus 4.6 (Thinking)', 'Claude Opus 4.6 (Thinking)');
+				dropdown.addOption('GPT-OSS 120B (Medium)', 'GPT-OSS 120B (Medium)');
+				dropdown.setValue(this.plugin.settings.agentModel || '');
+				dropdown.onChange(async (value) => {
+					this.plugin.settings.agentModel = value;
+					await this.plugin.saveSettings();
+				});
+			});
 
 		new Setting(containerEl)
 			.setName('Agent Permission Mode')
@@ -238,6 +282,37 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 						this.plugin.settings.agentTimeoutSeconds = num;
 						await this.plugin.saveSettings();
 					}
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Use Obsidian Writing Skill')
+			.setDesc('Inject a vault-local Obsidian writing skill into Agent prompts by default.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.agentUseObsidianSkill)
+				.onChange(async (value) => {
+					this.plugin.settings.agentUseObsidianSkill = value;
+					await this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Obsidian Skill File')
+			.setDesc('Vault-relative skill file used for Markdown note writing instructions.')
+			.addText(text => text
+				.setPlaceholder('_omg/skills/obsidian-writing-skill.md')
+				.setValue(this.plugin.settings.agentObsidianSkillPath)
+				.onChange(async (value) => {
+					this.plugin.settings.agentObsidianSkillPath = this.plugin.normalizeFolder(value.trim() || '_omg/skills/obsidian-writing-skill.md', '_omg/skills/obsidian-writing-skill.md');
+					await this.plugin.saveSettings();
+				})
+			)
+			.addButton(button => button
+				.setButtonText('Install skill')
+				.onClick(async () => {
+					const path = await this.plugin.installObsidianWritingSkill();
+					new Notice(`Obsidian writing skill installed: ${path}`);
+					this.display();
 				})
 			);
 

@@ -41,10 +41,13 @@ var DEFAULT_SETTINGS = {
   estimatedMonthlySpendUsd: 0,
   estimatedMonthlySpendMonth: "",
   agentCliPath: "agy",
+  agentModel: "",
   agentPermissionMode: "review",
   agentTimeoutSeconds: 60,
   agentEnvironment: "",
   agentWebSearchEnabled: false,
+  agentUseObsidianSkill: true,
+  agentObsidianSkillPath: "_omg/skills/obsidian-writing-skill.md",
   corpusName: "",
   corpusDisplayName: "Obsidian Vault",
   autoSync: true,
@@ -142,11 +145,40 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
     );
     containerEl.createEl("h2", { text: "Agent Workspace" });
     new import_obsidian.Setting(containerEl).setName("Antigravity CLI Path").setDesc("Path or command used by the Agent tab. Use a full path if Obsidian cannot find agy from your shell PATH.").addText(
-      (text) => text.setPlaceholder("/Users/you/.local/bin/agy").setValue(this.plugin.settings.agentCliPath).onChange(async (value) => {
+      (text) => text.setPlaceholder(process.platform === "win32" ? "agy.exe" : "/Users/you/.local/bin/agy").setValue(this.plugin.settings.agentCliPath).onChange(async (value) => {
         this.plugin.settings.agentCliPath = value.trim() || "agy";
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian.Setting(containerEl).setName("Find Antigravity CLI").setDesc("Auto-detect agy from PATH and common macOS/Windows install locations.").addButton(
+      (button) => button.setButtonText("Auto-detect").onClick(async () => {
+        const found = this.plugin.agentService.detectAgentCliPath();
+        if (!found) {
+          new import_obsidian.Notice("Could not find agy. Install Antigravity CLI or set the full path manually.");
+          return;
+        }
+        this.plugin.settings.agentCliPath = found;
+        await this.plugin.saveSettings();
+        new import_obsidian.Notice(`Antigravity CLI found: ${found}`);
+        this.display();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("AGY Model").setDesc("Model passed to agy with --model. Leave Auto to use the AGY default.").addDropdown((dropdown) => {
+      dropdown.addOption("", "Auto / AGY default");
+      dropdown.addOption("Gemini 3.5 Flash (Medium)", "Gemini 3.5 Flash (Medium)");
+      dropdown.addOption("Gemini 3.5 Flash (High)", "Gemini 3.5 Flash (High)");
+      dropdown.addOption("Gemini 3.5 Flash (Low)", "Gemini 3.5 Flash (Low)");
+      dropdown.addOption("Gemini 3.1 Pro (High)", "Gemini 3.1 Pro (High)");
+      dropdown.addOption("Gemini 3.1 Pro (Low)", "Gemini 3.1 Pro (Low)");
+      dropdown.addOption("Claude Sonnet 4.6 (Thinking)", "Claude Sonnet 4.6 (Thinking)");
+      dropdown.addOption("Claude Opus 4.6 (Thinking)", "Claude Opus 4.6 (Thinking)");
+      dropdown.addOption("GPT-OSS 120B (Medium)", "GPT-OSS 120B (Medium)");
+      dropdown.setValue(this.plugin.settings.agentModel || "");
+      dropdown.onChange(async (value) => {
+        this.plugin.settings.agentModel = value;
+        await this.plugin.saveSettings();
+      });
+    });
     new import_obsidian.Setting(containerEl).setName("Agent Permission Mode").setDesc("Review is preview-first. Auto and Yolo are reserved for trusted vault workflows.").addDropdown((dropdown) => {
       dropdown.addOption("review", "Safe / Review");
       dropdown.addOption("auto", "Auto");
@@ -164,6 +196,24 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
           this.plugin.settings.agentTimeoutSeconds = num;
           await this.plugin.saveSettings();
         }
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Use Obsidian Writing Skill").setDesc("Inject a vault-local Obsidian writing skill into Agent prompts by default.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.agentUseObsidianSkill).onChange(async (value) => {
+        this.plugin.settings.agentUseObsidianSkill = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Obsidian Skill File").setDesc("Vault-relative skill file used for Markdown note writing instructions.").addText(
+      (text) => text.setPlaceholder("_omg/skills/obsidian-writing-skill.md").setValue(this.plugin.settings.agentObsidianSkillPath).onChange(async (value) => {
+        this.plugin.settings.agentObsidianSkillPath = this.plugin.normalizeFolder(value.trim() || "_omg/skills/obsidian-writing-skill.md", "_omg/skills/obsidian-writing-skill.md");
+        await this.plugin.saveSettings();
+      })
+    ).addButton(
+      (button) => button.setButtonText("Install skill").onClick(async () => {
+        const path = await this.plugin.installObsidianWritingSkill();
+        new import_obsidian.Notice(`Obsidian writing skill installed: ${path}`);
+        this.display();
       })
     );
     new import_obsidian.Setting(containerEl).setName("Auto Sync").setDesc("Automatically sync files when they are created, modified, or deleted.").addToggle(
@@ -3123,9 +3173,10 @@ var ChatView = class extends import_obsidian4.ItemView {
     }
   }
   processVaultFileLinks(container) {
+    var _a;
     const links = Array.from(container.querySelectorAll("a[href]"));
     for (const link of links) {
-      const vaultPath = this.extractVaultNotePath(link.href);
+      const vaultPath = this.findVaultNotePath(link.href) || this.findVaultNotePath(link.textContent || "");
       if (!vaultPath)
         continue;
       link.addClass("gemini-chat-inline-citation");
@@ -3134,29 +3185,76 @@ var ChatView = class extends import_obsidian4.ItemView {
         event.preventDefault();
         await this.app.workspace.openLinkText(vaultPath, "", true);
       });
+      if (!((_a = link.nextElementSibling) == null ? void 0 : _a.hasClass("gemini-chat-find-note-btn"))) {
+        const findButton = document.createElement("button");
+        findButton.className = "gemini-chat-find-note-btn";
+        findButton.textContent = "Find note";
+        findButton.addEventListener("click", async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          await this.app.workspace.openLinkText(vaultPath, "", true);
+        });
+        link.insertAdjacentElement("afterend", findButton);
+      }
     }
   }
   extractVaultNotePath(text) {
-    const vaultRoot = this.plugin.getVaultPath().replace(/\\/g, "/").replace(/\/+$/g, "");
     const candidates = [];
-    const markdownFileUrl = /\]\((file:\/\/[^)]+?\.md)\)/g;
-    const bareFileUrl = /file:\/\/[^\s)]+?\.md/g;
+    const markdownLinks = /\[([^\]]+)]\(([^)]+)\)/g;
+    const bareFileUrl = /file:\/\/[^\s)]+(?:\.md)?/g;
+    const savedLocation = /(?:저장\s*위치|saved\s*note|saved\s*location|file|파일)\s*[:：]\s*([^\n]+)/gi;
     let match;
-    while ((match = markdownFileUrl.exec(text)) !== null)
-      candidates.push(match[1]);
+    while ((match = markdownLinks.exec(text)) !== null) {
+      candidates.push(match[1], match[2]);
+    }
     while ((match = bareFileUrl.exec(text)) !== null)
       candidates.push(match[0]);
-    candidates.push(text);
+    while ((match = savedLocation.exec(text)) !== null)
+      candidates.push(match[1]);
+    candidates.push(text.trim());
     for (const candidate of candidates) {
-      const absolutePath = this.toAbsoluteVaultCandidate(candidate);
-      if (!absolutePath || !absolutePath.startsWith(`${vaultRoot}/`))
-        continue;
-      const relativePath = decodeURIComponent(absolutePath.slice(vaultRoot.length + 1));
-      const file = this.app.vault.getAbstractFileByPath(relativePath);
+      const vaultPath = this.findVaultNotePath(candidate);
+      if (vaultPath)
+        return vaultPath;
+    }
+    return null;
+  }
+  findVaultNotePath(candidate) {
+    var _a;
+    const cleaned = this.cleanNoteCandidate(candidate);
+    if (!cleaned)
+      return null;
+    const directCandidates = [cleaned];
+    if (!cleaned.endsWith(".md"))
+      directCandidates.push(`${cleaned}.md`);
+    for (const direct of directCandidates) {
+      const absolute = this.toAbsoluteVaultCandidate(direct);
+      if (absolute) {
+        const vaultRoot = this.plugin.getVaultPath().replace(/\\/g, "/").replace(/\/+$/g, "");
+        if (absolute.startsWith(`${vaultRoot}/`)) {
+          const relativePath = decodeURIComponent(absolute.slice(vaultRoot.length + 1));
+          const file2 = this.app.vault.getAbstractFileByPath(relativePath);
+          if (file2 instanceof import_obsidian4.TFile && file2.extension === "md")
+            return file2.path;
+        }
+      }
+      const file = this.app.vault.getAbstractFileByPath(direct);
       if (file instanceof import_obsidian4.TFile && file.extension === "md")
         return file.path;
     }
-    return null;
+    const normalizedCandidates = directCandidates.map((path) => this.normalizeCitationPath(path));
+    const basenameCandidates = normalizedCandidates.map((path) => path.split("/").pop() || path);
+    const matches = this.app.vault.getMarkdownFiles().filter((file) => {
+      const normalizedPath = this.normalizeCitationPath(file.path);
+      const normalizedName = this.normalizeCitationPath(file.name);
+      return normalizedCandidates.some(
+        (candidate2) => normalizedPath === candidate2 || normalizedPath.endsWith(`/${candidate2}`) || normalizedName === candidate2
+      ) || basenameCandidates.some((name) => normalizedName === name);
+    });
+    return ((_a = matches[0]) == null ? void 0 : _a.path) || null;
+  }
+  cleanNoteCandidate(candidate) {
+    return decodeURIComponent(candidate || "").trim().replace(/^["'`]+|["'`]+$/g, "").replace(/^<|>$/g, "").replace(/^\.?\//, "").replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0].replace(/\s+$/g, "").trim();
   }
   toAbsoluteVaultCandidate(candidate) {
     const trimmed = candidate.trim().replace(/^["']|["']$/g, "");
@@ -3611,6 +3709,9 @@ ${message}`,
       "--print-timeout",
       `${timeoutSeconds}s`
     ];
+    if (this.plugin.settings.agentModel) {
+      args.push("--model", this.plugin.settings.agentModel);
+    }
     if (this.plugin.settings.agentPermissionMode === "auto" || this.plugin.settings.agentPermissionMode === "yolo") {
       args.push("--dangerously-skip-permissions");
     }
@@ -3624,6 +3725,7 @@ ${message}`,
     const trustMode = this.plugin.settings.agentPermissionMode;
     const scope = this.plugin.settings.syncFolders.join(", ") || "No sync folders selected";
     const webSearch = this.plugin.settings.agentWebSearchEnabled;
+    const obsidianSkill = await this.getObsidianSkillContext();
     const syncedNotes = await this.buildSyncedNotesContext(prompt);
     this.lastContextStats = syncedNotes.stats;
     let activeNoteContent = "";
@@ -3645,6 +3747,7 @@ ${message}`,
       `Agent output folder for generated notes: ${agentOutputFolder}.`,
       "All generated files must stay inside the current Obsidian vault. Treat the Agent output folder as a vault-relative path, not an external filesystem destination.",
       "If you create a note file, save it inside the Agent output folder and include its vault-relative markdown link in the response. If you only draft text in chat, do not claim that a file was saved.",
+      obsidianSkill,
       `Selected knowledge folders: ${scope}.`,
       activeFile ? `Active note path: ${activeFile.path}.` : "No active note is open.",
       activeNoteContent ? `Active note content excerpt:
@@ -3662,6 +3765,32 @@ ${activeNoteContent}` : "",
       "User request:",
       prompt
     ].join("\n");
+  }
+  async getObsidianSkillContext() {
+    if (!this.plugin.settings.agentUseObsidianSkill)
+      return "";
+    const path = this.plugin.normalizeFolder(
+      this.plugin.settings.agentObsidianSkillPath || "_omg/skills/obsidian-writing-skill.md",
+      "_omg/skills/obsidian-writing-skill.md"
+    );
+    const file = this.plugin.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof import_obsidian5.TFile)) {
+      return [
+        "Obsidian writing skill is enabled, but the skill file is not installed yet.",
+        "Default behavior: write valid Obsidian Markdown, save generated notes inside the Agent output folder, return vault-relative note links, and do not claim a save unless the file exists."
+      ].join("\n");
+    }
+    try {
+      const content = await this.plugin.app.vault.read(file);
+      return [
+        "Obsidian writing skill loaded. Follow it by default for note-writing tasks:",
+        `--- ${path} ---`,
+        content.length > 5e3 ? `${content.slice(0, 5e3)}
+...[skill truncated]` : content
+      ].join("\n");
+    } catch (e) {
+      return "";
+    }
   }
   async buildSyncedNotesContext(prompt) {
     const contexts = [];
@@ -3970,21 +4099,27 @@ ${content.slice(0, 4e3)}`.toLowerCase();
     }
     return env;
   }
+  detectAgentCliPath() {
+    return this.resolveCommand("agy");
+  }
   resolveCommand(command) {
     if ((0, import_path.isAbsolute)(command) || command.includes("/") || command.includes("\\")) {
       return (0, import_fs.existsSync)(command) ? command : null;
     }
-    const paths = [
+    const paths = Array.from(new Set([
       ...(process.env.PATH || "").split(import_path.delimiter),
       (0, import_path.join)((0, import_os.homedir)(), ".local", "bin"),
       (0, import_path.join)((0, import_os.homedir)(), ".antigravity", "antigravity", "bin"),
       (0, import_path.join)((0, import_os.homedir)(), ".antigravity-ide", "antigravity-ide", "bin"),
+      (0, import_path.join)((0, import_os.homedir)(), ".antigravity", "bin"),
+      (0, import_path.join)((0, import_os.homedir)(), ".antigravity-ide", "bin"),
+      ...process.platform === "win32" ? this.getWindowsAgentSearchPaths() : [],
       "/opt/homebrew/bin",
       "/usr/local/bin",
       "/usr/bin",
       "/bin"
-    ].filter(Boolean);
-    const extensions = process.platform === "win32" ? ["", ".exe", ".cmd", ".bat"] : [""];
+    ].filter(Boolean)));
+    const extensions = process.platform === "win32" ? Array.from(/* @__PURE__ */ new Set(["", ...(process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";")])).map((ext) => ext.toLowerCase()) : [""];
     for (const dir of paths) {
       for (const ext of extensions) {
         const candidate = (0, import_path.join)(dir, `${command}${ext}`);
@@ -3994,12 +4129,39 @@ ${content.slice(0, 4e3)}`.toLowerCase();
     }
     return null;
   }
+  getWindowsAgentSearchPaths() {
+    const env = process.env;
+    const roots = [
+      env.LOCALAPPDATA,
+      env.APPDATA,
+      env.USERPROFILE,
+      env.ProgramFiles,
+      env["ProgramFiles(x86)"]
+    ].filter((value) => !!value);
+    const suffixes = [
+      ["Programs", "Antigravity", "bin"],
+      ["Programs", "Antigravity"],
+      ["Antigravity", "bin"],
+      ["Antigravity"],
+      ["Google", "Antigravity", "bin"],
+      ["Google", "Antigravity"],
+      [".local", "bin"],
+      ["AppData", "Roaming", "npm"]
+    ];
+    const paths = [];
+    for (const root of roots) {
+      for (const suffix of suffixes) {
+        paths.push((0, import_path.join)(root, ...suffix));
+      }
+    }
+    return paths;
+  }
   getMissingCommandMessage(command) {
     return [
       `Could not find the Agent CLI command "${command}".`,
       "If Obsidian was opened from Finder, Dock, or Start Menu, it may not inherit your shell PATH.",
-      "Open Settings > Master of Knowledge > Agent Workspace and set Antigravity CLI Path to the full command path.",
-      `On this Mac it is often: ${(0, import_os.homedir)()}/.local/bin/agy`
+      "Open Settings > Master of Knowledge > Agent Workspace and click Auto-detect, or set Antigravity CLI Path to the full command path.",
+      process.platform === "win32" ? "On Windows it is often agy.exe in PATH, %LOCALAPPDATA%\\Programs\\Antigravity, or %APPDATA%\\npm." : `On macOS it is often: ${(0, import_os.homedir)()}/.local/bin/agy`
     ].join("\n");
   }
 };
@@ -4074,10 +4236,16 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
       this.settings.estimatedMonthlySpendUsd = 0;
     }
     this.settings.agentCliPath = this.settings.agentCliPath || DEFAULT_SETTINGS.agentCliPath;
+    this.settings.agentModel = this.settings.agentModel || DEFAULT_SETTINGS.agentModel;
     this.settings.agentPermissionMode = this.settings.agentPermissionMode || DEFAULT_SETTINGS.agentPermissionMode;
     this.settings.agentTimeoutSeconds = this.settings.agentTimeoutSeconds || DEFAULT_SETTINGS.agentTimeoutSeconds;
     this.settings.agentEnvironment = this.settings.agentEnvironment || DEFAULT_SETTINGS.agentEnvironment;
     this.settings.agentWebSearchEnabled = typeof this.settings.agentWebSearchEnabled === "boolean" ? this.settings.agentWebSearchEnabled : DEFAULT_SETTINGS.agentWebSearchEnabled;
+    this.settings.agentUseObsidianSkill = typeof this.settings.agentUseObsidianSkill === "boolean" ? this.settings.agentUseObsidianSkill : DEFAULT_SETTINGS.agentUseObsidianSkill;
+    this.settings.agentObsidianSkillPath = this.normalizeFolder(
+      this.settings.agentObsidianSkillPath || DEFAULT_SETTINGS.agentObsidianSkillPath,
+      DEFAULT_SETTINGS.agentObsidianSkillPath
+    );
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -4232,6 +4400,47 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
       }
     }
     return path;
+  }
+  async installObsidianWritingSkill() {
+    const skillPath = this.normalizeFolder(
+      this.settings.agentObsidianSkillPath || DEFAULT_SETTINGS.agentObsidianSkillPath,
+      DEFAULT_SETTINGS.agentObsidianSkillPath
+    );
+    const folder = skillPath.split("/").slice(0, -1).join("/");
+    if (folder)
+      await this.ensureVaultFolder(folder);
+    const content = [
+      "# Obsidian Writing Skill",
+      "",
+      "Use this skill whenever the user asks the Agent to write, compile, summarize, or create an Obsidian note.",
+      "",
+      "## Output Contract",
+      "- Write valid Markdown that opens cleanly in Obsidian.",
+      "- Prefer clear headings, short paragraphs, tables only when they improve scanning, and actionable checklists.",
+      "- Use wiki links like [[Note Title]] only when the target note exists or when creating a deliberate new note.",
+      "- Keep generated notes inside the configured Agent output folder.",
+      "- When a note file is created, return its vault-relative path and a markdown link to that path.",
+      "- Do not claim a file was saved unless the file was actually written.",
+      "",
+      "## Source Discipline",
+      "- Cite vault note paths when using synced note evidence.",
+      "- Separate note-grounded claims from general suggestions.",
+      "- If evidence is weak or missing, say so plainly.",
+      "",
+      "## Korean Notes",
+      "- If the user writes Korean, answer in natural Korean.",
+      "- Avoid stiff translation tone; write as a practical Obsidian note the user can keep."
+    ].join("\n");
+    const existing = this.app.vault.getAbstractFileByPath(skillPath);
+    if (existing instanceof import_obsidian6.TFile) {
+      await this.app.vault.modify(existing, content);
+    } else {
+      await this.app.vault.create(skillPath, content);
+    }
+    this.settings.agentObsidianSkillPath = skillPath;
+    this.settings.agentUseObsidianSkill = true;
+    await this.saveSettings();
+    return skillPath;
   }
   openPluginSettings() {
     var _a;

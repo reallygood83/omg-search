@@ -383,6 +383,22 @@
 	text-decoration: none;
 }
 
+.gemini-chat-find-note-btn {
+	margin-left: 8px;
+	padding: 2px 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 4px;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.gemini-chat-find-note-btn:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-accent);
+}
+
 .gemini-chat-note-popover {
 	position: fixed;
 	z-index: 1000;

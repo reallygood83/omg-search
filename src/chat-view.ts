@@ -630,7 +630,7 @@ export class ChatView extends ItemView {
 	private processVaultFileLinks(container: HTMLElement) {
 		const links = Array.from(container.querySelectorAll('a[href]')) as HTMLAnchorElement[];
 		for (const link of links) {
-			const vaultPath = this.extractVaultNotePath(link.href);
+			const vaultPath = this.findVaultNotePath(link.href) || this.findVaultNotePath(link.textContent || '');
 			if (!vaultPath) continue;
 			link.addClass('gemini-chat-inline-citation');
 			link.setAttr('href', '#');
@@ -638,28 +638,89 @@ export class ChatView extends ItemView {
 				event.preventDefault();
 				await this.app.workspace.openLinkText(vaultPath, '', true);
 			});
+			if (!link.nextElementSibling?.hasClass('gemini-chat-find-note-btn')) {
+				const findButton = document.createElement('button');
+				findButton.className = 'gemini-chat-find-note-btn';
+				findButton.textContent = 'Find note';
+				findButton.addEventListener('click', async (event) => {
+					event.preventDefault();
+					event.stopPropagation();
+					await this.app.workspace.openLinkText(vaultPath, '', true);
+				});
+				link.insertAdjacentElement('afterend', findButton);
+			}
 		}
 	}
 
 	private extractVaultNotePath(text: string): string | null {
-		const vaultRoot = this.plugin.getVaultPath().replace(/\\/g, '/').replace(/\/+$/g, '');
 		const candidates: string[] = [];
-		const markdownFileUrl = /\]\((file:\/\/[^)]+?\.md)\)/g;
-		const bareFileUrl = /file:\/\/[^\s)]+?\.md/g;
+		const markdownLinks = /\[([^\]]+)]\(([^)]+)\)/g;
+		const bareFileUrl = /file:\/\/[^\s)]+(?:\.md)?/g;
+		const savedLocation = /(?:저장\s*위치|saved\s*note|saved\s*location|file|파일)\s*[:：]\s*([^\n]+)/gi;
 		let match: RegExpExecArray | null;
 
-		while ((match = markdownFileUrl.exec(text)) !== null) candidates.push(match[1]);
+		while ((match = markdownLinks.exec(text)) !== null) {
+			candidates.push(match[1], match[2]);
+		}
 		while ((match = bareFileUrl.exec(text)) !== null) candidates.push(match[0]);
-		candidates.push(text);
+		while ((match = savedLocation.exec(text)) !== null) candidates.push(match[1]);
+		candidates.push(text.trim());
 
 		for (const candidate of candidates) {
-			const absolutePath = this.toAbsoluteVaultCandidate(candidate);
-			if (!absolutePath || !absolutePath.startsWith(`${vaultRoot}/`)) continue;
-			const relativePath = decodeURIComponent(absolutePath.slice(vaultRoot.length + 1));
-			const file = this.app.vault.getAbstractFileByPath(relativePath);
-			if (file instanceof TFile && file.extension === 'md') return file.path;
+			const vaultPath = this.findVaultNotePath(candidate);
+			if (vaultPath) return vaultPath;
 		}
 		return null;
+	}
+
+	private findVaultNotePath(candidate: string): string | null {
+		const cleaned = this.cleanNoteCandidate(candidate);
+		if (!cleaned) return null;
+
+		const directCandidates = [cleaned];
+		if (!cleaned.endsWith('.md')) directCandidates.push(`${cleaned}.md`);
+
+		for (const direct of directCandidates) {
+			const absolute = this.toAbsoluteVaultCandidate(direct);
+			if (absolute) {
+				const vaultRoot = this.plugin.getVaultPath().replace(/\\/g, '/').replace(/\/+$/g, '');
+				if (absolute.startsWith(`${vaultRoot}/`)) {
+					const relativePath = decodeURIComponent(absolute.slice(vaultRoot.length + 1));
+					const file = this.app.vault.getAbstractFileByPath(relativePath);
+					if (file instanceof TFile && file.extension === 'md') return file.path;
+				}
+			}
+
+			const file = this.app.vault.getAbstractFileByPath(direct);
+			if (file instanceof TFile && file.extension === 'md') return file.path;
+		}
+
+		const normalizedCandidates = directCandidates.map(path => this.normalizeCitationPath(path));
+		const basenameCandidates = normalizedCandidates.map(path => path.split('/').pop() || path);
+		const matches = this.app.vault.getMarkdownFiles().filter(file => {
+			const normalizedPath = this.normalizeCitationPath(file.path);
+			const normalizedName = this.normalizeCitationPath(file.name);
+			return normalizedCandidates.some(candidate =>
+				normalizedPath === candidate ||
+				normalizedPath.endsWith(`/${candidate}`) ||
+				normalizedName === candidate
+			) || basenameCandidates.some(name => normalizedName === name);
+		});
+
+		return matches[0]?.path || null;
+	}
+
+	private cleanNoteCandidate(candidate: string): string {
+		return decodeURIComponent(candidate || '')
+			.trim()
+			.replace(/^["'`]+|["'`]+$/g, '')
+			.replace(/^<|>$/g, '')
+			.replace(/^\.?\//, '')
+			.replace(/^\[\[/, '')
+			.replace(/\]\]$/, '')
+			.split('|')[0]
+			.replace(/\s+$/g, '')
+			.trim();
 	}
 
 	private toAbsoluteVaultCandidate(candidate: string): string | null {
