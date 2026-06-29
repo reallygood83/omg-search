@@ -2800,6 +2800,7 @@ var ChatView = class extends import_obsidian4.ItemView {
       this.renderSettingsTab();
       return;
     }
+    this.renderConversationToolbar();
     this.messagesContainer = this.dashboardContentEl.createDiv({ cls: "gemini-chat-messages" });
     const list = this.activeTab === "agent" ? this.agentMessages : this.messages;
     if (list.length === 0) {
@@ -2857,6 +2858,27 @@ var ChatView = class extends import_obsidian4.ItemView {
         text: this.activeTab === "agent" ? "Agent is still running..." : "Thinking..."
       });
     }
+  }
+  renderConversationToolbar() {
+    const toolbar = this.dashboardContentEl.createDiv({ cls: "mok-conversation-toolbar" });
+    const title = toolbar.createDiv({ cls: "mok-conversation-title" });
+    title.createEl("span", {
+      text: this.activeTab === "agent" ? "Agent conversation" : "Chat conversation"
+    });
+    title.createEl("small", {
+      text: this.activeTab === "agent" ? "Start a fresh Agent run without clearing Chat." : "Start a fresh note chat without clearing Agent results."
+    });
+    const newButton = toolbar.createEl("button", {
+      cls: "mok-new-conversation-btn",
+      text: this.activeTab === "agent" ? "+ New agent chat" : "+ New chat"
+    });
+    const isRunningHere = this.isLoading && this.loadingTab === this.activeTab;
+    newButton.disabled = isRunningHere;
+    newButton.setAttr("aria-label", this.activeTab === "agent" ? "Start new Agent chat" : "Start new Chat");
+    if (isRunningHere) {
+      newButton.setAttr("title", "Stop the current run before starting a new conversation.");
+    }
+    newButton.addEventListener("click", () => this.startNewConversation());
   }
   renderBudgetTab() {
     const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel" });
@@ -4430,14 +4452,24 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
     return ((_a = cleaned.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/i, "")) || cleaned;
   }
   clearChat() {
+    this.startNewConversation();
+  }
+  startNewConversation() {
+    if (this.isLoading && this.loadingTab === this.activeTab) {
+      new import_obsidian4.Notice("Stop the current run before starting a new conversation.");
+      return;
+    }
     if (this.activeTab === "agent") {
       this.agentMessages = [];
-    } else {
+      new import_obsidian4.Notice("Started a new Agent conversation.");
+    } else if (this.activeTab === "chat") {
       this.messages = [];
       this.plugin.geminiService.clearChatHistory();
+      new import_obsidian4.Notice("Started a new Chat conversation.");
+    } else {
+      return;
     }
-    this.messagesContainer.empty();
-    this.showWelcomeMessage();
+    this.renderActiveTab();
   }
   // Render action buttons (Apply, Copy) for AI responses
   renderActionButtons(msgEl, message) {
