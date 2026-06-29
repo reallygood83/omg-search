@@ -159,7 +159,7 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 				.setPlaceholder('_omg')
 				.setValue(this.plugin.settings.workspaceFolder)
 				.onChange(async (value) => {
-					this.plugin.settings.workspaceFolder = value.trim() || '_omg';
+					this.plugin.settings.workspaceFolder = this.plugin.normalizeFolder(value.trim() || '_omg', '_omg');
 					await this.plugin.saveSettings();
 				})
 			);
@@ -171,7 +171,7 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 				.setPlaceholder('_omg/agent')
 				.setValue(this.plugin.settings.agentOutputFolder)
 				.onChange(async (value) => {
-					this.plugin.settings.agentOutputFolder = this.plugin.normalizeFolder(value.trim() || '_omg/agent');
+					this.plugin.settings.agentOutputFolder = this.plugin.normalizeFolder(value.trim() || '_omg/agent', '_omg/agent');
 					await this.plugin.saveSettings();
 				})
 			)

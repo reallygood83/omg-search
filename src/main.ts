@@ -99,9 +99,13 @@ export default class GeminiSyncPlugin extends Plugin {
 			...configuredFolders
 		].filter(folder => folder.trim().length > 0))).sort();
 		delete this.settings.syncFolder;
-		this.settings.workspaceFolder = this.normalizeFolder(this.settings.workspaceFolder || DEFAULT_SETTINGS.workspaceFolder);
+		this.settings.workspaceFolder = this.normalizeFolder(
+			this.settings.workspaceFolder || DEFAULT_SETTINGS.workspaceFolder,
+			DEFAULT_SETTINGS.workspaceFolder
+		);
 		this.settings.agentOutputFolder = this.normalizeFolder(
-			this.settings.agentOutputFolder || `${this.settings.workspaceFolder}/agent`
+			this.settings.agentOutputFolder || `${this.settings.workspaceFolder}/agent`,
+			`${this.settings.workspaceFolder}/agent`
 		);
 		this.settings.monthlyBudgetUsd = Number.isFinite(this.settings.monthlyBudgetUsd) ? this.settings.monthlyBudgetUsd : DEFAULT_SETTINGS.monthlyBudgetUsd;
 		this.settings.estimatedMonthlySpendUsd = Number.isFinite(this.settings.estimatedMonthlySpendUsd) ? this.settings.estimatedMonthlySpendUsd : DEFAULT_SETTINGS.estimatedMonthlySpendUsd;
@@ -261,12 +265,36 @@ export default class GeminiSyncPlugin extends Plugin {
 		return adapter.basePath || '/';
 	}
 
-	normalizeFolder(folder: string): string {
-		return (folder || '_omg').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') || '_omg';
+	normalizeFolder(folder: string, fallback = '_omg'): string {
+		const fallbackPath = (fallback || '_omg')
+			.replace(/\\/g, '/')
+			.replace(/^\/+|\/+$/g, '') || '_omg';
+		let cleaned = (folder || fallbackPath).trim().replace(/\\/g, '/');
+
+		try {
+			if (cleaned.startsWith('file://')) {
+				cleaned = decodeURIComponent(new URL(cleaned).pathname).replace(/\\/g, '/');
+			}
+		} catch {
+			cleaned = fallbackPath;
+		}
+
+		const vaultRoot = this.getVaultPath().replace(/\\/g, '/').replace(/\/+$/g, '');
+		if (vaultRoot && cleaned.startsWith(`${vaultRoot}/`)) {
+			cleaned = cleaned.slice(vaultRoot.length + 1);
+		} else if (cleaned === vaultRoot || cleaned.startsWith('/') || /^[A-Za-z]:\//.test(cleaned)) {
+			cleaned = fallbackPath;
+		}
+
+		const parts = cleaned
+			.replace(/^\/+|\/+$/g, '')
+			.split('/')
+			.filter(part => part && part !== '.' && part !== '..');
+		return parts.join('/') || fallbackPath;
 	}
 
 	async ensureWorkspaceFolder(subfolder?: string): Promise<string> {
-		const root = this.normalizeFolder(this.settings.workspaceFolder);
+		const root = this.normalizeFolder(this.settings.workspaceFolder, DEFAULT_SETTINGS.workspaceFolder);
 		const path = subfolder ? `${root}/${subfolder}` : root;
 		return this.ensureVaultFolder(path);
 	}

@@ -168,6 +168,7 @@ export class AgentService {
 			`Web search mode: ${webSearch ? 'enabled' : 'disabled'}.`,
 			`Workspace folder for generated artifacts: ${workspaceFolder}.`,
 			`Agent output folder for generated notes: ${agentOutputFolder}.`,
+			'All generated files must stay inside the current Obsidian vault. Treat the Agent output folder as a vault-relative path, not an external filesystem destination.',
 			'If you create a note file, save it inside the Agent output folder and include its vault-relative markdown link in the response. If you only draft text in chat, do not claim that a file was saved.',
 			`Selected knowledge folders: ${scope}.`,
 			activeFile ? `Active note path: ${activeFile.path}.` : 'No active note is open.',

@@ -116,13 +116,13 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.createEl("h2", { text: "Workspace & Budget" });
     new import_obsidian.Setting(containerEl).setName("Workspace Folder").setDesc("Generated agent reports, compiled notes, graphs, and logs are saved under this vault folder.").addText(
       (text) => text.setPlaceholder("_omg").setValue(this.plugin.settings.workspaceFolder).onChange(async (value) => {
-        this.plugin.settings.workspaceFolder = value.trim() || "_omg";
+        this.plugin.settings.workspaceFolder = this.plugin.normalizeFolder(value.trim() || "_omg", "_omg");
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian.Setting(containerEl).setName("Agent Output Folder").setDesc("Agent-generated notes are saved here when you use Create New Note or Save from the Agent tab.").addText(
       (text) => text.setPlaceholder("_omg/agent").setValue(this.plugin.settings.agentOutputFolder).onChange(async (value) => {
-        this.plugin.settings.agentOutputFolder = this.plugin.normalizeFolder(value.trim() || "_omg/agent");
+        this.plugin.settings.agentOutputFolder = this.plugin.normalizeFolder(value.trim() || "_omg/agent", "_omg/agent");
         await this.plugin.saveSettings();
       })
     ).addButton(
@@ -3643,6 +3643,7 @@ ${message}`,
       `Web search mode: ${webSearch ? "enabled" : "disabled"}.`,
       `Workspace folder for generated artifacts: ${workspaceFolder}.`,
       `Agent output folder for generated notes: ${agentOutputFolder}.`,
+      "All generated files must stay inside the current Obsidian vault. Treat the Agent output folder as a vault-relative path, not an external filesystem destination.",
       "If you create a note file, save it inside the Agent output folder and include its vault-relative markdown link in the response. If you only draft text in chat, do not claim that a file was saved.",
       `Selected knowledge folders: ${scope}.`,
       activeFile ? `Active note path: ${activeFile.path}.` : "No active note is open.",
@@ -4057,9 +4058,13 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
       ...configuredFolders
     ].filter((folder) => folder.trim().length > 0))).sort();
     delete this.settings.syncFolder;
-    this.settings.workspaceFolder = this.normalizeFolder(this.settings.workspaceFolder || DEFAULT_SETTINGS.workspaceFolder);
+    this.settings.workspaceFolder = this.normalizeFolder(
+      this.settings.workspaceFolder || DEFAULT_SETTINGS.workspaceFolder,
+      DEFAULT_SETTINGS.workspaceFolder
+    );
     this.settings.agentOutputFolder = this.normalizeFolder(
-      this.settings.agentOutputFolder || `${this.settings.workspaceFolder}/agent`
+      this.settings.agentOutputFolder || `${this.settings.workspaceFolder}/agent`,
+      `${this.settings.workspaceFolder}/agent`
     );
     this.settings.monthlyBudgetUsd = Number.isFinite(this.settings.monthlyBudgetUsd) ? this.settings.monthlyBudgetUsd : DEFAULT_SETTINGS.monthlyBudgetUsd;
     this.settings.estimatedMonthlySpendUsd = Number.isFinite(this.settings.estimatedMonthlySpendUsd) ? this.settings.estimatedMonthlySpendUsd : DEFAULT_SETTINGS.estimatedMonthlySpendUsd;
@@ -4192,11 +4197,27 @@ var GeminiSyncPlugin = class extends import_obsidian6.Plugin {
     const adapter = this.app.vault.adapter;
     return adapter.basePath || "/";
   }
-  normalizeFolder(folder) {
-    return (folder || "_omg").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "") || "_omg";
+  normalizeFolder(folder, fallback = "_omg") {
+    const fallbackPath = (fallback || "_omg").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "") || "_omg";
+    let cleaned = (folder || fallbackPath).trim().replace(/\\/g, "/");
+    try {
+      if (cleaned.startsWith("file://")) {
+        cleaned = decodeURIComponent(new URL(cleaned).pathname).replace(/\\/g, "/");
+      }
+    } catch (e) {
+      cleaned = fallbackPath;
+    }
+    const vaultRoot = this.getVaultPath().replace(/\\/g, "/").replace(/\/+$/g, "");
+    if (vaultRoot && cleaned.startsWith(`${vaultRoot}/`)) {
+      cleaned = cleaned.slice(vaultRoot.length + 1);
+    } else if (cleaned === vaultRoot || cleaned.startsWith("/") || /^[A-Za-z]:\//.test(cleaned)) {
+      cleaned = fallbackPath;
+    }
+    const parts = cleaned.replace(/^\/+|\/+$/g, "").split("/").filter((part) => part && part !== "." && part !== "..");
+    return parts.join("/") || fallbackPath;
   }
   async ensureWorkspaceFolder(subfolder) {
-    const root = this.normalizeFolder(this.settings.workspaceFolder);
+    const root = this.normalizeFolder(this.settings.workspaceFolder, DEFAULT_SETTINGS.workspaceFolder);
     const path = subfolder ? `${root}/${subfolder}` : root;
     return this.ensureVaultFolder(path);
   }
