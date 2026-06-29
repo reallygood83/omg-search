@@ -798,7 +798,7 @@ export class ChatView extends ItemView {
 		const panel = this.dashboardContentEl.createDiv({ cls: 'mok-panel mok-graph-panel' });
 		const header = panel.createDiv({ cls: 'mok-graph-header' });
 		header.createEl('h3', { text: 'Knowledge Graph' });
-		header.createEl('p', { text: 'Interactive node graph built from synced notes, wikilinks, and tags.' });
+		header.createEl('p', { text: 'Interactive node graph built from synced notes and curated wikilinks. Tags stay in the graph JSON and report.' });
 
 		const controls = panel.createDiv({ cls: 'mok-graph-controls' });
 		const maxLabel = controls.createEl('label', { cls: 'mok-graph-control-label' });
@@ -807,7 +807,7 @@ export class ChatView extends ItemView {
 		maxInput.min = '80';
 		maxInput.max = '500';
 		maxInput.step = '20';
-		maxInput.value = '300';
+		maxInput.value = '220';
 		const maxValue = maxLabel.createSpan({ cls: 'mok-graph-control-value', text: maxInput.value });
 
 		const hideLabel = controls.createEl('label', { cls: 'mok-graph-check-label' });
@@ -911,13 +911,14 @@ export class ChatView extends ItemView {
 		const degree = new Map<string, number>();
 		for (const node of allNodes) degree.set(node.id, node.degree || 0);
 
-		let candidates = allNodes.filter(node => node.kind !== 'tag' || (node.degree || 0) > 2);
+		let candidates = allNodes.filter(node => node.kind !== 'tag');
 		if (options.hideIsolated) candidates = candidates.filter(node => (degree.get(node.id) || 0) > 0);
 		const selected = candidates
 			.sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0) || (degree.get(b.id) || 0) - (degree.get(a.id) || 0))
 			.slice(0, options.maxNodes);
 		const selectedIds = new Set(selected.map(node => node.id));
-		const edges = allEdges.filter(edge => selectedIds.has(edge.from) && selectedIds.has(edge.to));
+		const rawEdges = allEdges.filter(edge => edge.type === 'wikilink' && selectedIds.has(edge.from) && selectedIds.has(edge.to));
+		const edges = this.capGraphEdges(rawEdges, selected, 420, 9);
 		const layout = this.computeForceLayout(selected, edges, container.clientWidth || 1100, 620);
 		const neighbors = new Map<string, Set<string>>();
 		for (const node of selected) neighbors.set(node.id, new Set());
@@ -926,7 +927,7 @@ export class ChatView extends ItemView {
 			neighbors.get(edge.to)?.add(edge.from);
 		}
 
-		statsEl.setText(`${selected.length} nodes · ${edges.length} links · ${new Set(selected.map(node => node.community || 0)).size} communities`);
+		statsEl.setText(`${selected.length} nodes · ${edges.length}/${rawEdges.length} visible links · ${new Set(selected.map(node => node.community || 0)).size} communities`);
 
 		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
 		svg.setAttribute('viewBox', `0 0 ${layout.width} ${layout.height}`);
@@ -1013,6 +1014,49 @@ export class ChatView extends ItemView {
 		}
 	}
 
+	private capGraphEdges(
+		edges: KnowledgeGraphEdge[],
+		nodes: KnowledgeGraphNode[],
+		maxEdges: number,
+		maxPerNode: number
+	): KnowledgeGraphEdge[] {
+		const nodeById = new Map(nodes.map(node => [node.id, node]));
+		const countByNode = new Map<string, number>();
+		const hubPenalty = (edge: KnowledgeGraphEdge) => {
+			const from = nodeById.get(edge.from);
+			const to = nodeById.get(edge.to);
+			const maxDegree = Math.max(from?.degree || 0, to?.degree || 0);
+			return Math.min(maxDegree, 500);
+		};
+		const sorted = [...edges].sort((a, b) => {
+			const aSame = (nodeById.get(a.from)?.community || 0) === (nodeById.get(a.to)?.community || 0) ? 0 : 1;
+			const bSame = (nodeById.get(b.from)?.community || 0) === (nodeById.get(b.to)?.community || 0) ? 0 : 1;
+			return aSame - bSame || hubPenalty(a) - hubPenalty(b);
+		});
+		const selected: KnowledgeGraphEdge[] = [];
+		for (const edge of sorted) {
+			if (selected.length >= maxEdges) break;
+			const fromCount = countByNode.get(edge.from) || 0;
+			const toCount = countByNode.get(edge.to) || 0;
+			if (fromCount >= maxPerNode || toCount >= maxPerNode) continue;
+			selected.push(edge);
+			countByNode.set(edge.from, fromCount + 1);
+			countByNode.set(edge.to, toCount + 1);
+		}
+		if (selected.length >= Math.min(maxEdges, edges.length) || maxPerNode >= 20) return selected;
+		for (const edge of sorted) {
+			if (selected.length >= maxEdges) break;
+			if (selected.includes(edge)) continue;
+			const fromCount = countByNode.get(edge.from) || 0;
+			const toCount = countByNode.get(edge.to) || 0;
+			if (fromCount >= maxPerNode + 3 || toCount >= maxPerNode + 3) continue;
+			selected.push(edge);
+			countByNode.set(edge.from, fromCount + 1);
+			countByNode.set(edge.to, toCount + 1);
+		}
+		return selected;
+	}
+
 	private computeForceLayout(
 		nodes: KnowledgeGraphNode[],
 		edges: KnowledgeGraphEdge[],
@@ -1052,7 +1096,7 @@ export class ChatView extends ItemView {
 
 		const visibleEdges = edges
 			.filter(edge => positions.has(edge.from) && positions.has(edge.to))
-			.slice(0, 900);
+			.slice(0, 500);
 		for (let iter = 0; iter < 130; iter++) {
 			const alpha = 1 - iter / 130;
 			for (let i = 0; i < nodes.length; i++) {
@@ -1063,8 +1107,8 @@ export class ChatView extends ItemView {
 					if (!b) continue;
 					const dx = a.x - b.x;
 					const dy = a.y - b.y;
-					const distSq = Math.max(dx * dx + dy * dy, 80);
-					const force = (a.community === b.community ? 650 : 1200) / distSq;
+					const distSq = Math.max(dx * dx + dy * dy, 180);
+					const force = (a.community === b.community ? 260 : 520) / distSq;
 					const fx = dx * force * alpha;
 					const fy = dy * force * alpha;
 					a.vx += fx;
@@ -1080,8 +1124,8 @@ export class ChatView extends ItemView {
 				const dx = b.x - a.x;
 				const dy = b.y - a.y;
 				const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-				const desired = edge.type === 'wikilink' ? 82 : 128;
-				const force = (dist - desired) * (edge.type === 'wikilink' ? 0.012 : 0.006) * alpha;
+				const desired = edge.type === 'wikilink' ? 92 : 138;
+				const force = (dist - desired) * (edge.type === 'wikilink' ? 0.008 : 0.004) * alpha;
 				const fx = (dx / dist) * force;
 				const fy = (dy / dist) * force;
 				a.vx += fx;
@@ -1091,19 +1135,34 @@ export class ChatView extends ItemView {
 			}
 			for (const item of positions.values()) {
 				const center = centerByCommunity.get(item.community) || { x: safeWidth / 2, y: safeHeight / 2 };
-				item.vx += (center.x - item.x) * 0.006 * alpha;
-				item.vy += (center.y - item.y) * 0.006 * alpha;
+				item.vx += (center.x - item.x) * 0.012 * alpha;
+				item.vy += (center.y - item.y) * 0.012 * alpha;
 				item.x += item.vx;
 				item.y += item.vy;
 				item.vx *= 0.72;
 				item.vy *= 0.72;
-				item.x = Math.max(36, Math.min(safeWidth - 36, item.x));
-				item.y = Math.max(36, Math.min(safeHeight - 36, item.y));
 			}
 		}
 
 		const output = new Map<string, { x: number; y: number; r: number }>();
-		for (const [id, item] of positions.entries()) output.set(id, { x: item.x, y: item.y, r: item.r });
+		const raw = Array.from(positions.values());
+		const minX = Math.min(...raw.map(item => item.x - item.r));
+		const maxX = Math.max(...raw.map(item => item.x + item.r));
+		const minY = Math.min(...raw.map(item => item.y - item.r));
+		const maxY = Math.max(...raw.map(item => item.y + item.r));
+		const padding = 58;
+		const scale = Math.min(
+			(safeWidth - padding * 2) / Math.max(maxX - minX, 1),
+			(safeHeight - padding * 2) / Math.max(maxY - minY, 1),
+			1.25
+		);
+		for (const [id, item] of positions.entries()) {
+			output.set(id, {
+				x: padding + (item.x - minX) * scale,
+				y: padding + (item.y - minY) * scale,
+				r: item.r
+			});
+		}
 		return { width: safeWidth, height: safeHeight, positions: output };
 	}
 
