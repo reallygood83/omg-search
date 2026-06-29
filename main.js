@@ -2766,6 +2766,7 @@ var ChatView = class extends import_obsidian4.ItemView {
       { id: "agent", label: "Agent" },
       { id: "budget", label: "Budget" },
       { id: "workspace", label: "_omg" },
+      { id: "graph", label: "Graph" },
       { id: "settings", label: "Settings" }
     ];
     for (const tab of tabs) {
@@ -2789,6 +2790,10 @@ var ChatView = class extends import_obsidian4.ItemView {
     }
     if (this.activeTab === "workspace") {
       this.renderWorkspaceTab();
+      return;
+    }
+    if (this.activeTab === "graph") {
+      void this.renderGraphTab();
       return;
     }
     if (this.activeTab === "settings") {
@@ -3323,6 +3328,311 @@ ${node.degree || 0} linked notes`
   communityCanvasColor(community) {
     const colors = ["1", "2", "3", "4", "5", "6"];
     return colors[community % colors.length];
+  }
+  async renderGraphTab() {
+    const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel mok-graph-panel" });
+    const header = panel.createDiv({ cls: "mok-graph-header" });
+    header.createEl("h3", { text: "Knowledge Graph" });
+    header.createEl("p", { text: "Interactive node graph built from synced notes, wikilinks, and tags." });
+    const controls = panel.createDiv({ cls: "mok-graph-controls" });
+    const maxLabel = controls.createEl("label", { cls: "mok-graph-control-label" });
+    maxLabel.createSpan({ text: "Top nodes" });
+    const maxInput = maxLabel.createEl("input", { type: "range" });
+    maxInput.min = "80";
+    maxInput.max = "500";
+    maxInput.step = "20";
+    maxInput.value = "300";
+    const maxValue = maxLabel.createSpan({ cls: "mok-graph-control-value", text: maxInput.value });
+    const hideLabel = controls.createEl("label", { cls: "mok-graph-check-label" });
+    const hideInput = hideLabel.createEl("input", { type: "checkbox" });
+    hideInput.checked = true;
+    hideLabel.createSpan({ text: "Hide isolated" });
+    const searchInput = controls.createEl("input", {
+      cls: "mok-graph-search",
+      type: "search",
+      placeholder: "Search nodes..."
+    });
+    const rebuildBtn = controls.createEl("button", {
+      cls: "gemini-chat-action-btn",
+      text: "Rebuild graph"
+    });
+    const fitBtn = controls.createEl("button", {
+      cls: "gemini-chat-action-btn",
+      text: "Relayout"
+    });
+    const statsEl = panel.createDiv({ cls: "mok-graph-stats" });
+    const graphWrap = panel.createDiv({ cls: "mok-graph-wrap" });
+    let graph = await this.loadKnowledgeGraph();
+    if (!graph) {
+      statsEl.setText("No graph yet. Build one from your synced notes.");
+      const empty = graphWrap.createDiv({ cls: "mok-graph-empty" });
+      empty.createEl("div", { text: "No graph artifact found." });
+      empty.createEl("button", {
+        cls: "gemini-chat-action-btn",
+        text: "Build knowledge graph"
+      }).addEventListener("click", async () => {
+        await this.buildKnowledgeGraphArtifacts();
+        this.renderActiveTab();
+      });
+      return;
+    }
+    let currentGraph = graph;
+    const redraw = () => {
+      if (!currentGraph)
+        return;
+      maxValue.setText(maxInput.value);
+      this.renderInteractiveGraph(graphWrap, statsEl, currentGraph, {
+        maxNodes: Number(maxInput.value),
+        hideIsolated: hideInput.checked,
+        search: searchInput.value
+      });
+    };
+    maxInput.addEventListener("input", redraw);
+    hideInput.addEventListener("change", redraw);
+    searchInput.addEventListener("input", redraw);
+    fitBtn.addEventListener("click", redraw);
+    rebuildBtn.addEventListener("click", async () => {
+      rebuildBtn.setText("Building...");
+      rebuildBtn.setAttr("disabled", "true");
+      try {
+        await this.buildKnowledgeGraphArtifacts();
+        currentGraph = await this.loadKnowledgeGraph();
+        if (currentGraph)
+          redraw();
+        new import_obsidian4.Notice("Knowledge graph rebuilt.");
+      } catch (error) {
+        new import_obsidian4.Notice("Failed to rebuild graph.");
+        console.error("Graph rebuild error:", error);
+      } finally {
+        rebuildBtn.removeAttribute("disabled");
+        rebuildBtn.setText("Rebuild graph");
+      }
+    });
+    redraw();
+  }
+  async loadKnowledgeGraph() {
+    const path = `${this.plugin.settings.workspaceFolder}/graph/knowledge-graph.json`;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof import_obsidian4.TFile))
+      return null;
+    try {
+      const raw = await this.app.vault.read(file);
+      const graph = JSON.parse(raw);
+      if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges))
+        return null;
+      return graph;
+    } catch (error) {
+      console.error("Failed to read knowledge graph:", error);
+      return null;
+    }
+  }
+  renderInteractiveGraph(container, statsEl, graph, options) {
+    var _a, _b;
+    container.empty();
+    const allNodes = graph.nodes || [];
+    const allEdges = graph.edges || [];
+    const degree = /* @__PURE__ */ new Map();
+    for (const node of allNodes)
+      degree.set(node.id, node.degree || 0);
+    let candidates = allNodes.filter((node) => node.kind !== "tag" || (node.degree || 0) > 2);
+    if (options.hideIsolated)
+      candidates = candidates.filter((node) => (degree.get(node.id) || 0) > 0);
+    const selected = candidates.sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0) || (degree.get(b.id) || 0) - (degree.get(a.id) || 0)).slice(0, options.maxNodes);
+    const selectedIds = new Set(selected.map((node) => node.id));
+    const edges = allEdges.filter((edge) => selectedIds.has(edge.from) && selectedIds.has(edge.to));
+    const layout = this.computeForceLayout(selected, edges, container.clientWidth || 1100, 620);
+    const neighbors = /* @__PURE__ */ new Map();
+    for (const node of selected)
+      neighbors.set(node.id, /* @__PURE__ */ new Set());
+    for (const edge of edges) {
+      (_a = neighbors.get(edge.from)) == null ? void 0 : _a.add(edge.to);
+      (_b = neighbors.get(edge.to)) == null ? void 0 : _b.add(edge.from);
+    }
+    statsEl.setText(`${selected.length} nodes \xB7 ${edges.length} links \xB7 ${new Set(selected.map((node) => node.community || 0)).size} communities`);
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
+    svg.setAttribute("class", "mok-graph-svg");
+    container.appendChild(svg);
+    const edgeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    edgeLayer.setAttribute("class", "mok-graph-edge-layer");
+    svg.appendChild(edgeLayer);
+    const nodeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    nodeLayer.setAttribute("class", "mok-graph-node-layer");
+    svg.appendChild(nodeLayer);
+    const search = options.search.trim().toLowerCase();
+    const nodeElements = /* @__PURE__ */ new Map();
+    const edgeElements = [];
+    for (const edge of edges) {
+      const from = layout.positions.get(edge.from);
+      const to = layout.positions.get(edge.to);
+      if (!from || !to)
+        continue;
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", String(from.x));
+      line.setAttribute("y1", String(from.y));
+      line.setAttribute("x2", String(to.x));
+      line.setAttribute("y2", String(to.y));
+      line.setAttribute("class", edge.type === "wikilink" ? "mok-graph-edge mok-graph-edge-link" : "mok-graph-edge");
+      edgeLayer.appendChild(line);
+      edgeElements.push({ element: line, from: edge.from, to: edge.to });
+    }
+    for (const node of selected) {
+      const pos = layout.positions.get(node.id);
+      if (!pos)
+        continue;
+      const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      const title = node.title || node.path;
+      const isSearchHit = search && title.toLowerCase().includes(search);
+      group.setAttribute("class", isSearchHit ? "mok-graph-node mok-graph-node-search-hit" : "mok-graph-node");
+      group.setAttribute("transform", `translate(${pos.x}, ${pos.y})`);
+      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      circle.setAttribute("r", String(pos.r));
+      circle.setAttribute("fill", this.communityGraphColor(node.community || 0));
+      circle.setAttribute("data-node-id", node.id);
+      group.appendChild(circle);
+      if (pos.r > 12 || isSearchHit) {
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        label.setAttribute("y", String(pos.r + 13));
+        label.setAttribute("text-anchor", "middle");
+        label.textContent = this.truncateGraphLabel(title, pos.r > 18 ? 18 : 12);
+        group.appendChild(label);
+      }
+      const tooltip = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      tooltip.textContent = `${title}
+${node.path}
+Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100)}`;
+      group.appendChild(tooltip);
+      group.addEventListener("mouseenter", () => {
+        const related = neighbors.get(node.id) || /* @__PURE__ */ new Set();
+        for (const [id, el] of nodeElements.entries()) {
+          el.toggleClass("mok-graph-faded", id !== node.id && !related.has(id));
+        }
+        for (const edgeEl of edgeElements) {
+          const active = edgeEl.from === node.id || edgeEl.to === node.id;
+          edgeEl.element.toggleClass("mok-graph-edge-highlight", active);
+          edgeEl.element.toggleClass("mok-graph-faded", !active);
+        }
+      });
+      group.addEventListener("mouseleave", () => {
+        for (const el of nodeElements.values())
+          el.removeClass("mok-graph-faded");
+        for (const edgeEl of edgeElements) {
+          edgeEl.element.removeClass("mok-graph-edge-highlight");
+          edgeEl.element.removeClass("mok-graph-faded");
+        }
+      });
+      group.addEventListener("click", async () => {
+        if (node.kind === "tag")
+          return;
+        const file = this.app.vault.getAbstractFileByPath(node.path);
+        if (file instanceof import_obsidian4.TFile)
+          await this.app.workspace.getLeaf(true).openFile(file);
+      });
+      nodeLayer.appendChild(group);
+      nodeElements.set(node.id, group);
+    }
+  }
+  computeForceLayout(nodes, edges, width, height) {
+    const safeWidth = Math.max(width, 900);
+    const safeHeight = Math.max(height, 560);
+    const positions = /* @__PURE__ */ new Map();
+    const communities = Array.from(new Set(nodes.map((node) => node.community || 0))).sort((a, b) => a - b);
+    const centerByCommunity = /* @__PURE__ */ new Map();
+    const ring = Math.min(safeWidth, safeHeight) * 0.28;
+    communities.forEach((community, index) => {
+      const angle = Math.PI * 2 * index / Math.max(communities.length, 1);
+      centerByCommunity.set(community, {
+        x: safeWidth / 2 + Math.cos(angle) * ring,
+        y: safeHeight / 2 + Math.sin(angle) * ring * 0.72
+      });
+    });
+    nodes.forEach((node, index) => {
+      const community = node.community || 0;
+      const center = centerByCommunity.get(community) || { x: safeWidth / 2, y: safeHeight / 2 };
+      const seed = this.graphSeed(node.id);
+      const angle = seed * Math.PI * 2;
+      const radius = 28 + index % 17 * 9;
+      const nodeRadius = 5 + Math.sqrt(Math.max(0, node.pageRank || 0)) * 18 + Math.min(node.degree || 0, 40) * 0.12;
+      positions.set(node.id, {
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+        vx: 0,
+        vy: 0,
+        r: Math.max(5, Math.min(26, nodeRadius)),
+        community
+      });
+    });
+    const visibleEdges = edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).slice(0, 900);
+    for (let iter = 0; iter < 130; iter++) {
+      const alpha = 1 - iter / 130;
+      for (let i = 0; i < nodes.length; i++) {
+        const a = positions.get(nodes[i].id);
+        if (!a)
+          continue;
+        for (let j = i + 1; j < nodes.length; j++) {
+          const b = positions.get(nodes[j].id);
+          if (!b)
+            continue;
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          const distSq = Math.max(dx * dx + dy * dy, 80);
+          const force = (a.community === b.community ? 650 : 1200) / distSq;
+          const fx = dx * force * alpha;
+          const fy = dy * force * alpha;
+          a.vx += fx;
+          a.vy += fy;
+          b.vx -= fx;
+          b.vy -= fy;
+        }
+      }
+      for (const edge of visibleEdges) {
+        const a = positions.get(edge.from);
+        const b = positions.get(edge.to);
+        if (!a || !b)
+          continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+        const desired = edge.type === "wikilink" ? 82 : 128;
+        const force = (dist - desired) * (edge.type === "wikilink" ? 0.012 : 6e-3) * alpha;
+        const fx = dx / dist * force;
+        const fy = dy / dist * force;
+        a.vx += fx;
+        a.vy += fy;
+        b.vx -= fx;
+        b.vy -= fy;
+      }
+      for (const item of positions.values()) {
+        const center = centerByCommunity.get(item.community) || { x: safeWidth / 2, y: safeHeight / 2 };
+        item.vx += (center.x - item.x) * 6e-3 * alpha;
+        item.vy += (center.y - item.y) * 6e-3 * alpha;
+        item.x += item.vx;
+        item.y += item.vy;
+        item.vx *= 0.72;
+        item.vy *= 0.72;
+        item.x = Math.max(36, Math.min(safeWidth - 36, item.x));
+        item.y = Math.max(36, Math.min(safeHeight - 36, item.y));
+      }
+    }
+    const output = /* @__PURE__ */ new Map();
+    for (const [id, item] of positions.entries())
+      output.set(id, { x: item.x, y: item.y, r: item.r });
+    return { width: safeWidth, height: safeHeight, positions: output };
+  }
+  communityGraphColor(community) {
+    const colors = ["#6366f1", "#10b981", "#f59e0b", "#ec4899", "#06b6d4", "#8b5cf6", "#ef4444", "#84cc16", "#14b8a6", "#f97316", "#a855f7", "#22c55e"];
+    return colors[Math.abs(community) % colors.length];
+  }
+  graphSeed(value) {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0) / 4294967295;
+  }
+  truncateGraphLabel(label, max) {
+    return label.length > max ? `${label.slice(0, max - 1)}\u2026` : label;
   }
   async writeVaultFile(path, content) {
     const existing = this.app.vault.getAbstractFileByPath(path);

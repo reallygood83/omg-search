@@ -65,6 +65,154 @@
 	background: var(--interactive-accent);
 }
 
+.mok-graph-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	min-height: 0;
+	height: 100%;
+}
+
+.mok-graph-header h3 {
+	margin-bottom: 4px;
+}
+
+.mok-graph-header p {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.mok-graph-controls {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+	padding: 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: var(--background-secondary);
+}
+
+.mok-graph-control-label,
+.mok-graph-check-label {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
+.mok-graph-control-label input[type="range"] {
+	width: 130px;
+}
+
+.mok-graph-control-value {
+	min-width: 30px;
+	color: var(--text-normal);
+	font-variant-numeric: tabular-nums;
+}
+
+.mok-graph-search {
+	flex: 1;
+	min-width: 180px;
+	padding: 7px 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-primary);
+	color: var(--text-normal);
+}
+
+.mok-graph-stats {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 22px;
+	color: var(--text-muted);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+}
+
+.mok-graph-wrap {
+	position: relative;
+	flex: 1;
+	min-height: 560px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	overflow: hidden;
+	background:
+		radial-gradient(circle at center, rgba(255, 255, 255, 0.055) 0 1px, transparent 1px 100%),
+		var(--background-primary);
+	background-size: 18px 18px;
+}
+
+.mok-graph-empty {
+	display: flex;
+	height: 100%;
+	min-height: 420px;
+	align-items: center;
+	justify-content: center;
+	flex-direction: column;
+	gap: 12px;
+	color: var(--text-muted);
+}
+
+.mok-graph-svg {
+	width: 100%;
+	height: 100%;
+	min-height: 560px;
+	display: block;
+}
+
+.mok-graph-edge {
+	stroke: rgba(180, 180, 205, 0.34);
+	stroke-width: 1.1;
+	transition: opacity 160ms ease, stroke 160ms ease, stroke-width 160ms ease;
+}
+
+.mok-graph-edge-link {
+	stroke: rgba(210, 210, 235, 0.46);
+}
+
+.mok-graph-edge-highlight {
+	stroke: #ffd24b;
+	stroke-width: 2.4;
+	opacity: 1;
+}
+
+.mok-graph-node {
+	cursor: pointer;
+	transition: opacity 160ms ease;
+}
+
+.mok-graph-node circle {
+	stroke: rgba(255, 255, 255, 0.78);
+	stroke-width: 1.6;
+	filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.35));
+	transition: stroke 160ms ease, stroke-width 160ms ease, opacity 160ms ease;
+}
+
+.mok-graph-node:hover circle,
+.mok-graph-node-search-hit circle {
+	stroke: var(--text-accent);
+	stroke-width: 3.5;
+}
+
+.mok-graph-node text {
+	fill: var(--text-normal);
+	font-size: 10px;
+	font-weight: 650;
+	paint-order: stroke;
+	stroke: var(--background-primary);
+	stroke-width: 4px;
+	stroke-linejoin: round;
+	pointer-events: none;
+}
+
+.mok-graph-faded {
+	opacity: 0.13;
+}
+
 /* ==================== Chat Header ==================== */
 .gemini-chat-header {
 	display: flex;
