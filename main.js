@@ -3360,7 +3360,21 @@ ${node.degree || 0} linked notes`
       cls: "gemini-chat-action-btn",
       text: "Rebuild graph"
     });
+    const zoomOutBtn = controls.createEl("button", {
+      cls: "gemini-chat-action-btn",
+      text: "-"
+    });
+    zoomOutBtn.setAttr("aria-label", "Zoom out graph");
+    const zoomInBtn = controls.createEl("button", {
+      cls: "gemini-chat-action-btn",
+      text: "+"
+    });
+    zoomInBtn.setAttr("aria-label", "Zoom in graph");
     const fitBtn = controls.createEl("button", {
+      cls: "gemini-chat-action-btn",
+      text: "Fit"
+    });
+    const relayoutBtn = controls.createEl("button", {
       cls: "gemini-chat-action-btn",
       text: "Relayout"
     });
@@ -3401,7 +3415,10 @@ ${node.degree || 0} linked notes`
     hideInput.addEventListener("change", redraw);
     tagInput.addEventListener("change", redraw);
     searchInput.addEventListener("input", redraw);
-    fitBtn.addEventListener("click", redraw);
+    zoomOutBtn.addEventListener("click", () => this.zoomGraph(graphWrap, 0.82));
+    zoomInBtn.addEventListener("click", () => this.zoomGraph(graphWrap, 1.22));
+    fitBtn.addEventListener("click", () => this.resetGraphZoom(graphWrap));
+    relayoutBtn.addEventListener("click", redraw);
     resetBtn.addEventListener("click", () => {
       maxInput.value = "120";
       hideInput.checked = true;
@@ -3462,6 +3479,7 @@ ${node.degree || 0} linked notes`
       candidates = candidates.filter((node) => (degree.get(node.id) || 0) > 0);
     const selected = candidates.sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0) || (degree.get(b.id) || 0) - (degree.get(a.id) || 0)).slice(0, options.maxNodes);
     const selectedIds = new Set(selected.map((node) => node.id));
+    const selectedById = new Map(selected.map((node) => [node.id, node]));
     const rawEdges = allEdges.filter(
       (edge) => selectedIds.has(edge.from) && selectedIds.has(edge.to) && (options.includeTags || edge.type === "wikilink")
     );
@@ -3480,13 +3498,20 @@ ${node.degree || 0} linked notes`
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
     svg.setAttribute("class", "mok-graph-svg");
+    svg.setAttribute("data-graph-scale", "1");
+    svg.setAttribute("data-graph-x", "0");
+    svg.setAttribute("data-graph-y", "0");
     container.appendChild(svg);
+    const viewport = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    viewport.setAttribute("class", "mok-graph-viewport");
+    svg.appendChild(viewport);
     const edgeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
     edgeLayer.setAttribute("class", "mok-graph-edge-layer");
-    svg.appendChild(edgeLayer);
+    viewport.appendChild(edgeLayer);
     const nodeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
     nodeLayer.setAttribute("class", "mok-graph-node-layer");
-    svg.appendChild(nodeLayer);
+    viewport.appendChild(nodeLayer);
+    this.attachGraphNavigation(svg, viewport, detailPanel, layout.width, layout.height);
     const nodeElements = /* @__PURE__ */ new Map();
     const edgeElements = [];
     for (const edge of edges) {
@@ -3550,8 +3575,7 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
         }
       });
       group.addEventListener("click", async () => {
-        var _a2;
-        await this.showGraphNodeDetail(detailPanel, node, ((_a2 = neighbors.get(node.id)) == null ? void 0 : _a2.size) || 0);
+        await this.showGraphNodeDetail(detailPanel, node, Array.from(neighbors.get(node.id) || []), selectedById);
       });
       nodeLayer.appendChild(group);
       nodeElements.set(node.id, group);
@@ -3561,7 +3585,114 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
         detailPanel.addClass("mok-graph-detail-hidden");
     });
   }
-  async showGraphNodeDetail(panel, node, visibleNeighborCount) {
+  attachGraphNavigation(svg, viewport, detailPanel, width, height) {
+    let isPanning = false;
+    let last = null;
+    const getState = () => ({
+      scale: Number(svg.dataset.graphScale || "1"),
+      x: Number(svg.dataset.graphX || "0"),
+      y: Number(svg.dataset.graphY || "0")
+    });
+    const apply = (state) => {
+      svg.dataset.graphScale = String(state.scale);
+      svg.dataset.graphX = String(state.x);
+      svg.dataset.graphY = String(state.y);
+      viewport.setAttribute("transform", `translate(${state.x} ${state.y}) scale(${state.scale})`);
+    };
+    const point = (event) => {
+      const rect = svg.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left) / Math.max(rect.width, 1) * width,
+        y: (event.clientY - rect.top) / Math.max(rect.height, 1) * height
+      };
+    };
+    const zoomAt = (factor, cx, cy) => {
+      const current = getState();
+      const nextScale = Math.max(0.35, Math.min(4, current.scale * factor));
+      const ratio = nextScale / current.scale;
+      apply({
+        scale: nextScale,
+        x: cx - (cx - current.x) * ratio,
+        y: cy - (cy - current.y) * ratio
+      });
+    };
+    svg.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const p = point(event);
+      zoomAt(event.deltaY < 0 ? 1.12 : 0.89, p.x, p.y);
+    }, { passive: false });
+    svg.addEventListener("pointerdown", (event) => {
+      const target = event.target;
+      if (target.closest(".mok-graph-node") || target.closest(".mok-graph-detail"))
+        return;
+      isPanning = true;
+      last = point(event);
+      detailPanel.addClass("mok-graph-detail-hidden");
+      svg.addClass("mok-graph-panning");
+      svg.setPointerCapture(event.pointerId);
+    });
+    svg.addEventListener("pointermove", (event) => {
+      if (!isPanning || !last)
+        return;
+      const p = point(event);
+      const state = getState();
+      apply({
+        scale: state.scale,
+        x: state.x + p.x - last.x,
+        y: state.y + p.y - last.y
+      });
+      last = p;
+    });
+    const stopPan = (event) => {
+      if (!isPanning)
+        return;
+      isPanning = false;
+      last = null;
+      svg.removeClass("mok-graph-panning");
+      try {
+        svg.releasePointerCapture(event.pointerId);
+      } catch (e) {
+      }
+    };
+    svg.addEventListener("pointerup", stopPan);
+    svg.addEventListener("pointercancel", stopPan);
+  }
+  zoomGraph(container, factor) {
+    const svg = container.querySelector(".mok-graph-svg");
+    const viewport = container.querySelector(".mok-graph-viewport");
+    if (!svg || !viewport)
+      return;
+    const viewBox = svg.viewBox.baseVal;
+    const current = {
+      scale: Number(svg.dataset.graphScale || "1"),
+      x: Number(svg.dataset.graphX || "0"),
+      y: Number(svg.dataset.graphY || "0")
+    };
+    const cx = viewBox.width / 2;
+    const cy = viewBox.height / 2;
+    const nextScale = Math.max(0.35, Math.min(4, current.scale * factor));
+    const ratio = nextScale / current.scale;
+    const next = {
+      scale: nextScale,
+      x: cx - (cx - current.x) * ratio,
+      y: cy - (cy - current.y) * ratio
+    };
+    svg.dataset.graphScale = String(next.scale);
+    svg.dataset.graphX = String(next.x);
+    svg.dataset.graphY = String(next.y);
+    viewport.setAttribute("transform", `translate(${next.x} ${next.y}) scale(${next.scale})`);
+  }
+  resetGraphZoom(container) {
+    const svg = container.querySelector(".mok-graph-svg");
+    const viewport = container.querySelector(".mok-graph-viewport");
+    if (!svg || !viewport)
+      return;
+    svg.dataset.graphScale = "1";
+    svg.dataset.graphX = "0";
+    svg.dataset.graphY = "0";
+    viewport.setAttribute("transform", "translate(0 0) scale(1)");
+  }
+  async showGraphNodeDetail(panel, node, visibleNeighborIds, selectedById) {
     panel.empty();
     panel.removeClass("mok-graph-detail-hidden");
     const close = panel.createEl("button", { cls: "mok-graph-detail-close", text: "x" });
@@ -3573,7 +3704,7 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
     });
     panel.createEl("h4", { text: node.title || node.path });
     panel.createEl("p", {
-      text: `${node.path} \xB7 degree ${node.degree || 0} \xB7 visible neighbors ${visibleNeighborCount} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100)}`
+      text: `${node.path} \xB7 degree ${node.degree || 0} \xB7 visible neighbors ${visibleNeighborIds.length} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100)}`
     });
     if (node.kind === "note") {
       const file = this.app.vault.getAbstractFileByPath(node.path);
@@ -3585,6 +3716,24 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
         const openBtn = actions.createEl("button", { cls: "gemini-chat-action-btn", text: "Open note" });
         openBtn.addEventListener("click", async () => {
           await this.app.workspace.getLeaf(true).openFile(file);
+        });
+      }
+    }
+    const neighbors = visibleNeighborIds.map((id) => selectedById.get(id)).filter((neighbor) => !!neighbor).sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0)).slice(0, 10);
+    if (neighbors.length > 0) {
+      const relationWrap = panel.createDiv({ cls: "mok-graph-detail-relations" });
+      relationWrap.createEl("strong", { text: "Visible connections" });
+      for (const neighbor of neighbors) {
+        const item = relationWrap.createEl("button", {
+          cls: "mok-graph-relation-btn",
+          text: neighbor.title || neighbor.path
+        });
+        item.addEventListener("click", async () => {
+          if (neighbor.kind !== "note")
+            return;
+          const file = this.app.vault.getAbstractFileByPath(neighbor.path);
+          if (file instanceof import_obsidian4.TFile)
+            await this.app.workspace.getLeaf(true).openFile(file);
         });
       }
     }

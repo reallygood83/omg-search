@@ -215,6 +215,39 @@
 	margin-top: 10px;
 }
 
+.mok-graph-detail-relations {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 12px;
+	padding-top: 10px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.mok-graph-detail-relations strong {
+	color: var(--text-normal);
+	font-size: 12px;
+}
+
+.mok-graph-relation-btn {
+	width: 100%;
+	padding: 6px 8px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-primary);
+	color: var(--text-muted);
+	font-size: 12px;
+	line-height: 1.35;
+	text-align: left;
+	cursor: pointer;
+}
+
+.mok-graph-relation-btn:hover {
+	border-color: var(--interactive-accent);
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
 .mok-graph-empty {
 	display: flex;
 	height: 100%;
@@ -231,16 +264,24 @@
 	height: 100%;
 	min-height: 560px;
 	display: block;
+	cursor: grab;
+	touch-action: none;
+	user-select: none;
+}
+
+.mok-graph-svg.mok-graph-panning {
+	cursor: grabbing;
 }
 
 .mok-graph-edge {
-	stroke: rgba(180, 180, 205, 0.34);
-	stroke-width: 1.1;
+	stroke: rgba(200, 205, 230, 0.5);
+	stroke-width: 1.25;
 	transition: opacity 160ms ease, stroke 160ms ease, stroke-width 160ms ease;
+	vector-effect: non-scaling-stroke;
 }
 
 .mok-graph-edge-link {
-	stroke: rgba(210, 210, 235, 0.46);
+	stroke: rgba(220, 225, 250, 0.62);
 }
 
 .mok-graph-edge-highlight {

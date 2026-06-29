@@ -831,7 +831,24 @@ export class ChatView extends ItemView {
 			text: 'Rebuild graph'
 		});
 
+		const zoomOutBtn = controls.createEl('button', {
+			cls: 'gemini-chat-action-btn',
+			text: '-'
+		});
+		zoomOutBtn.setAttr('aria-label', 'Zoom out graph');
+
+		const zoomInBtn = controls.createEl('button', {
+			cls: 'gemini-chat-action-btn',
+			text: '+'
+		});
+		zoomInBtn.setAttr('aria-label', 'Zoom in graph');
+
 		const fitBtn = controls.createEl('button', {
+			cls: 'gemini-chat-action-btn',
+			text: 'Fit'
+		});
+
+		const relayoutBtn = controls.createEl('button', {
 			cls: 'gemini-chat-action-btn',
 			text: 'Relayout'
 		});
@@ -876,7 +893,10 @@ export class ChatView extends ItemView {
 		hideInput.addEventListener('change', redraw);
 		tagInput.addEventListener('change', redraw);
 		searchInput.addEventListener('input', redraw);
-		fitBtn.addEventListener('click', redraw);
+		zoomOutBtn.addEventListener('click', () => this.zoomGraph(graphWrap, 0.82));
+		zoomInBtn.addEventListener('click', () => this.zoomGraph(graphWrap, 1.22));
+		fitBtn.addEventListener('click', () => this.resetGraphZoom(graphWrap));
+		relayoutBtn.addEventListener('click', redraw);
 		resetBtn.addEventListener('click', () => {
 			maxInput.value = '120';
 			hideInput.checked = true;
@@ -942,6 +962,7 @@ export class ChatView extends ItemView {
 			.sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0) || (degree.get(b.id) || 0) - (degree.get(a.id) || 0))
 			.slice(0, options.maxNodes);
 		const selectedIds = new Set(selected.map(node => node.id));
+		const selectedById = new Map(selected.map(node => [node.id, node]));
 		const rawEdges = allEdges.filter(edge =>
 			selectedIds.has(edge.from) &&
 			selectedIds.has(edge.to) &&
@@ -965,14 +986,22 @@ export class ChatView extends ItemView {
 		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
 		svg.setAttribute('viewBox', `0 0 ${layout.width} ${layout.height}`);
 		svg.setAttribute('class', 'mok-graph-svg');
+		svg.setAttribute('data-graph-scale', '1');
+		svg.setAttribute('data-graph-x', '0');
+		svg.setAttribute('data-graph-y', '0');
 		container.appendChild(svg);
+
+		const viewport = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+		viewport.setAttribute('class', 'mok-graph-viewport');
+		svg.appendChild(viewport);
 
 		const edgeLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
 		edgeLayer.setAttribute('class', 'mok-graph-edge-layer');
-		svg.appendChild(edgeLayer);
+		viewport.appendChild(edgeLayer);
 		const nodeLayer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
 		nodeLayer.setAttribute('class', 'mok-graph-node-layer');
-		svg.appendChild(nodeLayer);
+		viewport.appendChild(nodeLayer);
+		this.attachGraphNavigation(svg, viewport, detailPanel, layout.width, layout.height);
 
 		const nodeElements = new Map<string, SVGElement>();
 		const edgeElements: Array<{ element: SVGElement; from: string; to: string }> = [];
@@ -1037,7 +1066,7 @@ export class ChatView extends ItemView {
 				}
 			});
 			group.addEventListener('click', async () => {
-				await this.showGraphNodeDetail(detailPanel, node, neighbors.get(node.id)?.size || 0);
+				await this.showGraphNodeDetail(detailPanel, node, Array.from(neighbors.get(node.id) || []), selectedById);
 			});
 
 			nodeLayer.appendChild(group);
@@ -1049,7 +1078,119 @@ export class ChatView extends ItemView {
 		});
 	}
 
-	private async showGraphNodeDetail(panel: HTMLElement, node: KnowledgeGraphNode, visibleNeighborCount: number) {
+	private attachGraphNavigation(svg: SVGSVGElement, viewport: SVGGElement, detailPanel: HTMLElement, width: number, height: number) {
+		let isPanning = false;
+		let last: { x: number; y: number } | null = null;
+		const getState = () => ({
+			scale: Number(svg.dataset.graphScale || '1'),
+			x: Number(svg.dataset.graphX || '0'),
+			y: Number(svg.dataset.graphY || '0')
+		});
+		const apply = (state: { scale: number; x: number; y: number }) => {
+			svg.dataset.graphScale = String(state.scale);
+			svg.dataset.graphX = String(state.x);
+			svg.dataset.graphY = String(state.y);
+			viewport.setAttribute('transform', `translate(${state.x} ${state.y}) scale(${state.scale})`);
+		};
+		const point = (event: MouseEvent | WheelEvent | PointerEvent) => {
+			const rect = svg.getBoundingClientRect();
+			return {
+				x: ((event.clientX - rect.left) / Math.max(rect.width, 1)) * width,
+				y: ((event.clientY - rect.top) / Math.max(rect.height, 1)) * height
+			};
+		};
+		const zoomAt = (factor: number, cx: number, cy: number) => {
+			const current = getState();
+			const nextScale = Math.max(0.35, Math.min(4, current.scale * factor));
+			const ratio = nextScale / current.scale;
+			apply({
+				scale: nextScale,
+				x: cx - (cx - current.x) * ratio,
+				y: cy - (cy - current.y) * ratio
+			});
+		};
+
+		svg.addEventListener('wheel', (event) => {
+			event.preventDefault();
+			const p = point(event);
+			zoomAt(event.deltaY < 0 ? 1.12 : 0.89, p.x, p.y);
+		}, { passive: false });
+		svg.addEventListener('pointerdown', (event) => {
+			const target = event.target as Element;
+			if (target.closest('.mok-graph-node') || target.closest('.mok-graph-detail')) return;
+			isPanning = true;
+			last = point(event);
+			detailPanel.addClass('mok-graph-detail-hidden');
+			svg.addClass('mok-graph-panning');
+			svg.setPointerCapture(event.pointerId);
+		});
+		svg.addEventListener('pointermove', (event) => {
+			if (!isPanning || !last) return;
+			const p = point(event);
+			const state = getState();
+			apply({
+				scale: state.scale,
+				x: state.x + p.x - last.x,
+				y: state.y + p.y - last.y
+			});
+			last = p;
+		});
+		const stopPan = (event: PointerEvent) => {
+			if (!isPanning) return;
+			isPanning = false;
+			last = null;
+			svg.removeClass('mok-graph-panning');
+			try {
+				svg.releasePointerCapture(event.pointerId);
+			} catch {
+				// Pointer capture may already be released by the browser.
+			}
+		};
+		svg.addEventListener('pointerup', stopPan);
+		svg.addEventListener('pointercancel', stopPan);
+	}
+
+	private zoomGraph(container: HTMLElement, factor: number) {
+		const svg = container.querySelector('.mok-graph-svg') as SVGSVGElement | null;
+		const viewport = container.querySelector('.mok-graph-viewport') as SVGGElement | null;
+		if (!svg || !viewport) return;
+		const viewBox = svg.viewBox.baseVal;
+		const current = {
+			scale: Number(svg.dataset.graphScale || '1'),
+			x: Number(svg.dataset.graphX || '0'),
+			y: Number(svg.dataset.graphY || '0')
+		};
+		const cx = viewBox.width / 2;
+		const cy = viewBox.height / 2;
+		const nextScale = Math.max(0.35, Math.min(4, current.scale * factor));
+		const ratio = nextScale / current.scale;
+		const next = {
+			scale: nextScale,
+			x: cx - (cx - current.x) * ratio,
+			y: cy - (cy - current.y) * ratio
+		};
+		svg.dataset.graphScale = String(next.scale);
+		svg.dataset.graphX = String(next.x);
+		svg.dataset.graphY = String(next.y);
+		viewport.setAttribute('transform', `translate(${next.x} ${next.y}) scale(${next.scale})`);
+	}
+
+	private resetGraphZoom(container: HTMLElement) {
+		const svg = container.querySelector('.mok-graph-svg') as SVGSVGElement | null;
+		const viewport = container.querySelector('.mok-graph-viewport') as SVGGElement | null;
+		if (!svg || !viewport) return;
+		svg.dataset.graphScale = '1';
+		svg.dataset.graphX = '0';
+		svg.dataset.graphY = '0';
+		viewport.setAttribute('transform', 'translate(0 0) scale(1)');
+	}
+
+	private async showGraphNodeDetail(
+		panel: HTMLElement,
+		node: KnowledgeGraphNode,
+		visibleNeighborIds: string[],
+		selectedById: Map<string, KnowledgeGraphNode>
+	) {
 		panel.empty();
 		panel.removeClass('mok-graph-detail-hidden');
 		const close = panel.createEl('button', { cls: 'mok-graph-detail-close', text: 'x' });
@@ -1061,7 +1202,7 @@ export class ChatView extends ItemView {
 		});
 		panel.createEl('h4', { text: node.title || node.path });
 		panel.createEl('p', {
-			text: `${node.path} · degree ${node.degree || 0} · visible neighbors ${visibleNeighborCount} · PageRank ${Math.round((node.pageRank || 0) * 100)}`
+			text: `${node.path} · degree ${node.degree || 0} · visible neighbors ${visibleNeighborIds.length} · PageRank ${Math.round((node.pageRank || 0) * 100)}`
 		});
 		if (node.kind === 'note') {
 			const file = this.app.vault.getAbstractFileByPath(node.path);
@@ -1076,6 +1217,26 @@ export class ChatView extends ItemView {
 				const openBtn = actions.createEl('button', { cls: 'gemini-chat-action-btn', text: 'Open note' });
 				openBtn.addEventListener('click', async () => {
 					await this.app.workspace.getLeaf(true).openFile(file);
+				});
+			}
+		}
+		const neighbors = visibleNeighborIds
+			.map(id => selectedById.get(id))
+			.filter((neighbor): neighbor is KnowledgeGraphNode => !!neighbor)
+			.sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0))
+			.slice(0, 10);
+		if (neighbors.length > 0) {
+			const relationWrap = panel.createDiv({ cls: 'mok-graph-detail-relations' });
+			relationWrap.createEl('strong', { text: 'Visible connections' });
+			for (const neighbor of neighbors) {
+				const item = relationWrap.createEl('button', {
+					cls: 'mok-graph-relation-btn',
+					text: neighbor.title || neighbor.path
+				});
+				item.addEventListener('click', async () => {
+					if (neighbor.kind !== 'note') return;
+					const file = this.app.vault.getAbstractFileByPath(neighbor.path);
+					if (file instanceof TFile) await this.app.workspace.getLeaf(true).openFile(file);
 				});
 			}
 		}
