@@ -3333,20 +3333,24 @@ ${node.degree || 0} linked notes`
     const panel = this.dashboardContentEl.createDiv({ cls: "mok-panel mok-graph-panel" });
     const header = panel.createDiv({ cls: "mok-graph-header" });
     header.createEl("h3", { text: "Knowledge Graph" });
-    header.createEl("p", { text: "Interactive node graph built from synced notes and curated wikilinks. Tags stay in the graph JSON and report." });
+    header.createEl("p", { text: "Alda-style overview of synced notes: PageRank size, community color, 1-hop hover, and click-to-inspect." });
     const controls = panel.createDiv({ cls: "mok-graph-controls" });
     const maxLabel = controls.createEl("label", { cls: "mok-graph-control-label" });
     maxLabel.createSpan({ text: "Top nodes" });
     const maxInput = maxLabel.createEl("input", { type: "range" });
     maxInput.min = "80";
-    maxInput.max = "500";
-    maxInput.step = "20";
-    maxInput.value = "220";
+    maxInput.max = "300";
+    maxInput.step = "10";
+    maxInput.value = "120";
     const maxValue = maxLabel.createSpan({ cls: "mok-graph-control-value", text: maxInput.value });
     const hideLabel = controls.createEl("label", { cls: "mok-graph-check-label" });
     const hideInput = hideLabel.createEl("input", { type: "checkbox" });
     hideInput.checked = true;
     hideLabel.createSpan({ text: "Hide isolated" });
+    const tagLabel = controls.createEl("label", { cls: "mok-graph-check-label" });
+    const tagInput = tagLabel.createEl("input", { type: "checkbox" });
+    tagInput.checked = false;
+    tagLabel.createSpan({ text: "Include tags" });
     const searchInput = controls.createEl("input", {
       cls: "mok-graph-search",
       type: "search",
@@ -3360,8 +3364,13 @@ ${node.degree || 0} linked notes`
       cls: "gemini-chat-action-btn",
       text: "Relayout"
     });
+    const resetBtn = controls.createEl("button", {
+      cls: "gemini-chat-action-btn",
+      text: "Reset"
+    });
     const statsEl = panel.createDiv({ cls: "mok-graph-stats" });
     const graphWrap = panel.createDiv({ cls: "mok-graph-wrap" });
+    const detailPanel = graphWrap.createDiv({ cls: "mok-graph-detail mok-graph-detail-hidden" });
     let graph = await this.loadKnowledgeGraph();
     if (!graph) {
       statsEl.setText("No graph yet. Build one from your synced notes.");
@@ -3384,13 +3393,22 @@ ${node.degree || 0} linked notes`
       this.renderInteractiveGraph(graphWrap, statsEl, currentGraph, {
         maxNodes: Number(maxInput.value),
         hideIsolated: hideInput.checked,
+        includeTags: tagInput.checked,
         search: searchInput.value
       });
     };
     maxInput.addEventListener("input", redraw);
     hideInput.addEventListener("change", redraw);
+    tagInput.addEventListener("change", redraw);
     searchInput.addEventListener("input", redraw);
     fitBtn.addEventListener("click", redraw);
+    resetBtn.addEventListener("click", () => {
+      maxInput.value = "120";
+      hideInput.checked = true;
+      tagInput.checked = false;
+      searchInput.value = "";
+      redraw();
+    });
     rebuildBtn.addEventListener("click", async () => {
       rebuildBtn.setText("Building...");
       rebuildBtn.setAttr("disabled", "true");
@@ -3428,19 +3446,26 @@ ${node.degree || 0} linked notes`
   }
   renderInteractiveGraph(container, statsEl, graph, options) {
     var _a, _b;
+    const existingDetail = container.querySelector(".mok-graph-detail");
     container.empty();
+    const detailPanel = container.createDiv({ cls: "mok-graph-detail mok-graph-detail-hidden" });
+    if (existingDetail instanceof HTMLElement && existingDetail.textContent) {
+      detailPanel.setText(existingDetail.textContent);
+    }
     const allNodes = graph.nodes || [];
     const allEdges = graph.edges || [];
     const degree = /* @__PURE__ */ new Map();
     for (const node of allNodes)
       degree.set(node.id, node.degree || 0);
-    let candidates = allNodes.filter((node) => node.kind !== "tag");
+    let candidates = allNodes.filter((node) => options.includeTags || node.kind !== "tag");
     if (options.hideIsolated)
       candidates = candidates.filter((node) => (degree.get(node.id) || 0) > 0);
     const selected = candidates.sort((a, b) => (b.pageRank || 0) - (a.pageRank || 0) || (degree.get(b.id) || 0) - (degree.get(a.id) || 0)).slice(0, options.maxNodes);
     const selectedIds = new Set(selected.map((node) => node.id));
-    const rawEdges = allEdges.filter((edge) => edge.type === "wikilink" && selectedIds.has(edge.from) && selectedIds.has(edge.to));
-    const edges = this.capGraphEdges(rawEdges, selected, 420, 9);
+    const rawEdges = allEdges.filter(
+      (edge) => selectedIds.has(edge.from) && selectedIds.has(edge.to) && (options.includeTags || edge.type === "wikilink")
+    );
+    const edges = this.capGraphEdges(rawEdges, selected, options.includeTags ? 520 : 340, options.includeTags ? 10 : 8);
     const layout = this.computeForceLayout(selected, edges, container.clientWidth || 1100, 620);
     const neighbors = /* @__PURE__ */ new Map();
     for (const node of selected)
@@ -3449,7 +3474,9 @@ ${node.degree || 0} linked notes`
       (_a = neighbors.get(edge.from)) == null ? void 0 : _a.add(edge.to);
       (_b = neighbors.get(edge.to)) == null ? void 0 : _b.add(edge.from);
     }
-    statsEl.setText(`${selected.length} nodes \xB7 ${edges.length}/${rawEdges.length} visible links \xB7 ${new Set(selected.map((node) => node.community || 0)).size} communities`);
+    const search = options.search.trim().toLowerCase();
+    const searchHits = search ? selected.filter((node) => (node.title || node.path).toLowerCase().includes(search)).length : 0;
+    statsEl.setText(`${selected.length} nodes \xB7 ${edges.length}/${rawEdges.length} visible links \xB7 ${new Set(selected.map((node) => node.community || 0)).size} communities${search ? ` \xB7 ${searchHits} search hits` : ""}`);
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
     svg.setAttribute("class", "mok-graph-svg");
@@ -3460,7 +3487,6 @@ ${node.degree || 0} linked notes`
     const nodeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
     nodeLayer.setAttribute("class", "mok-graph-node-layer");
     svg.appendChild(nodeLayer);
-    const search = options.search.trim().toLowerCase();
     const nodeElements = /* @__PURE__ */ new Map();
     const edgeElements = [];
     for (const edge of edges) {
@@ -3490,6 +3516,7 @@ ${node.degree || 0} linked notes`
       circle.setAttribute("r", String(pos.r));
       circle.setAttribute("fill", this.communityGraphColor(node.community || 0));
       circle.setAttribute("data-node-id", node.id);
+      circle.setAttribute("data-node-kind", node.kind);
       group.appendChild(circle);
       if (pos.r > 12 || isSearchHit) {
         const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
@@ -3523,14 +3550,43 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
         }
       });
       group.addEventListener("click", async () => {
-        if (node.kind === "tag")
-          return;
-        const file = this.app.vault.getAbstractFileByPath(node.path);
-        if (file instanceof import_obsidian4.TFile)
-          await this.app.workspace.getLeaf(true).openFile(file);
+        var _a2;
+        await this.showGraphNodeDetail(detailPanel, node, ((_a2 = neighbors.get(node.id)) == null ? void 0 : _a2.size) || 0);
       });
       nodeLayer.appendChild(group);
       nodeElements.set(node.id, group);
+    }
+    svg.addEventListener("click", (event) => {
+      if (event.target === svg)
+        detailPanel.addClass("mok-graph-detail-hidden");
+    });
+  }
+  async showGraphNodeDetail(panel, node, visibleNeighborCount) {
+    panel.empty();
+    panel.removeClass("mok-graph-detail-hidden");
+    const close = panel.createEl("button", { cls: "mok-graph-detail-close", text: "x" });
+    close.setAttr("aria-label", "Close graph detail");
+    close.addEventListener("click", () => panel.addClass("mok-graph-detail-hidden"));
+    panel.createEl("div", {
+      cls: "mok-graph-detail-kind",
+      text: node.kind === "tag" ? "tag bridge" : "synced note"
+    });
+    panel.createEl("h4", { text: node.title || node.path });
+    panel.createEl("p", {
+      text: `${node.path} \xB7 degree ${node.degree || 0} \xB7 visible neighbors ${visibleNeighborCount} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100)}`
+    });
+    if (node.kind === "note") {
+      const file = this.app.vault.getAbstractFileByPath(node.path);
+      if (file instanceof import_obsidian4.TFile) {
+        const preview = (await this.app.vault.cachedRead(file)).replace(/---[\s\S]*?---/, "").replace(/\s+/g, " ").trim().slice(0, 360);
+        if (preview)
+          panel.createEl("p", { cls: "mok-graph-detail-preview", text: preview });
+        const actions = panel.createDiv({ cls: "mok-graph-detail-actions" });
+        const openBtn = actions.createEl("button", { cls: "gemini-chat-action-btn", text: "Open note" });
+        openBtn.addEventListener("click", async () => {
+          await this.app.workspace.getLeaf(true).openFile(file);
+        });
+      }
     }
   }
   capGraphEdges(edges, nodes, maxEdges, maxPerNode) {
@@ -3583,12 +3639,20 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
     const positions = /* @__PURE__ */ new Map();
     const communities = Array.from(new Set(nodes.map((node) => node.community || 0))).sort((a, b) => a - b);
     const centerByCommunity = /* @__PURE__ */ new Map();
-    const ring = Math.min(safeWidth, safeHeight) * 0.28;
+    const communityCounts = /* @__PURE__ */ new Map();
+    for (const node of nodes)
+      communityCounts.set(node.community || 0, (communityCounts.get(node.community || 0) || 0) + 1);
+    const topCommunities = new Set(
+      Array.from(communityCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([community]) => community)
+    );
+    const ring = Math.min(safeWidth, safeHeight) * 0.18;
     communities.forEach((community, index) => {
-      const angle = Math.PI * 2 * index / Math.max(communities.length, 1);
+      const centerSeed = this.graphSeed(`community:${community}`);
+      const angle = centerSeed * Math.PI * 2;
+      const radial = topCommunities.has(community) ? ring : ring * 0.45;
       centerByCommunity.set(community, {
-        x: safeWidth / 2 + Math.cos(angle) * ring,
-        y: safeHeight / 2 + Math.sin(angle) * ring * 0.72
+        x: safeWidth / 2 + Math.cos(angle) * radial,
+        y: safeHeight / 2 + Math.sin(angle) * radial * 0.68
       });
     });
     nodes.forEach((node, index) => {
@@ -3596,8 +3660,8 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
       const center = centerByCommunity.get(community) || { x: safeWidth / 2, y: safeHeight / 2 };
       const seed = this.graphSeed(node.id);
       const angle = seed * Math.PI * 2;
-      const radius = 28 + index % 17 * 9;
-      const nodeRadius = 5 + Math.sqrt(Math.max(0, node.pageRank || 0)) * 18 + Math.min(node.degree || 0, 40) * 0.12;
+      const radius = 26 + index % 13 * 7;
+      const nodeRadius = node.kind === "tag" ? 7 + Math.min(node.degree || 0, 35) * 0.16 : 6 + Math.sqrt(Math.max(0, node.pageRank || 0)) * 20 + Math.min(node.degree || 0, 40) * 0.12;
       positions.set(node.id, {
         x: center.x + Math.cos(angle) * radius,
         y: center.y + Math.sin(angle) * radius,
@@ -3607,9 +3671,9 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
         community
       });
     });
-    const visibleEdges = edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).slice(0, 500);
-    for (let iter = 0; iter < 130; iter++) {
-      const alpha = 1 - iter / 130;
+    const visibleEdges = edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).slice(0, 420);
+    for (let iter = 0; iter < 180; iter++) {
+      const alpha = 1 - iter / 180;
       for (let i = 0; i < nodes.length; i++) {
         const a = positions.get(nodes[i].id);
         if (!a)
@@ -3620,8 +3684,8 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
             continue;
           const dx = a.x - b.x;
           const dy = a.y - b.y;
-          const distSq = Math.max(dx * dx + dy * dy, 180);
-          const force = (a.community === b.community ? 260 : 520) / distSq;
+          const distSq = Math.max(dx * dx + dy * dy, 220);
+          const force = (a.community === b.community ? 320 : 620) / distSq;
           const fx = dx * force * alpha;
           const fy = dy * force * alpha;
           a.vx += fx;
@@ -3638,8 +3702,8 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-        const desired = edge.type === "wikilink" ? 92 : 138;
-        const force = (dist - desired) * (edge.type === "wikilink" ? 8e-3 : 4e-3) * alpha;
+        const desired = edge.type === "wikilink" ? 105 : 150;
+        const force = (dist - desired) * (edge.type === "wikilink" ? 6e-3 : 3e-3) * alpha;
         const fx = dx / dist * force;
         const fy = dy / dist * force;
         a.vx += fx;
@@ -3649,8 +3713,10 @@ Degree ${node.degree || 0} \xB7 PageRank ${Math.round((node.pageRank || 0) * 100
       }
       for (const item of positions.values()) {
         const center = centerByCommunity.get(item.community) || { x: safeWidth / 2, y: safeHeight / 2 };
-        item.vx += (center.x - item.x) * 0.012 * alpha;
-        item.vy += (center.y - item.y) * 0.012 * alpha;
+        item.vx += (center.x - item.x) * 9e-3 * alpha;
+        item.vy += (center.y - item.y) * 9e-3 * alpha;
+        item.vx += (safeWidth / 2 - item.x) * 25e-4 * alpha;
+        item.vy += (safeHeight / 2 - item.y) * 25e-4 * alpha;
         item.x += item.vx;
         item.y += item.vy;
         item.vx *= 0.72;
