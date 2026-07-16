@@ -129,7 +129,19 @@ Turn your Obsidian vault into a Gemini File Search and Agent-powered knowledge w
 
 ## Troubleshooting
 
-### "API key is invalid"
+### "API key is invalid" / Verify fails on models
+- Create a fresh key at [Google AI Studio](https://aistudio.google.com/app/apikey)
+- Keys commonly start with `AIza`
+- Ensure the **Generative Language API** is enabled for the project
+
+### Verify succeeds but Sync fails / `importFile` HTTP 401 UNAUTHENTICATED (v2.0.37+)
+1. **Restricted keys**: Set **Application restrictions = None** (HTTP referrer/IP restrictions often break Obsidian desktop for File Search even when `/models` works).
+2. **Stale store after key change**: After switching keys/projects, click **Reset store** (or re-paste the key — store binding is cleared) then **Sync Now**.
+3. **Multi-step Verify**: Verify probes both `/models` and `/fileSearchStores`. If models pass but File Search fails, the notice explains File Search denial.
+4. **Upload path**: Sync prefers `uploadToFileSearchStore`, with fallback to Files API + `importFile`.
+5. Still stuck? Run **Diagnose File Search** for a stage-by-stage report.
+
+### "API key is invalid" (legacy note)
 - Verify your API key in Google AI Studio
 - Make sure the Gemini API is enabled in your Google Cloud project
 

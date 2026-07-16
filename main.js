@@ -66,11 +66,30 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h1", { text: "Master of Knowledge Settings" });
     containerEl.createEl("h2", { text: "API Configuration" });
-    new import_obsidian.Setting(containerEl).setName("Gemini API Key").setDesc("Enter your Google Gemini API key. Get one from Google AI Studio.").addText(
+    new import_obsidian.Setting(containerEl).setName("Gemini API Key").setDesc("Google AI Studio key (often AIza\u2026). Leave Application restrictions = None. Verify checks models AND File Search.").addText(
       (text) => text.setPlaceholder("Enter your API key").setValue(this.plugin.settings.apiKey ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" : "").onChange(async (value) => {
         if (value && !value.includes("\u2022")) {
-          this.plugin.settings.apiKey = value;
-          await this.plugin.saveSettings();
+          const previous = this.plugin.settings.apiKey;
+          const next = value.trim();
+          if (next && next !== previous) {
+            this.plugin.settings.apiKey = next;
+            this.plugin.settings.corpusName = "";
+            for (const path of Object.keys(this.plugin.settings.files)) {
+              const entry = this.plugin.settings.files[path];
+              this.plugin.settings.files[path] = {
+                ...entry,
+                uri: "",
+                status: "pending"
+              };
+            }
+            await this.plugin.saveSettings();
+            this.plugin.geminiService.refreshClient();
+            new import_obsidian.Notice("API key updated. File Search store binding cleared \u2014 run Verify, then Sync Now.");
+          } else {
+            this.plugin.settings.apiKey = next;
+            await this.plugin.saveSettings();
+            this.plugin.geminiService.refreshClient();
+          }
         }
       }).inputEl.type = "password"
     ).addButton(
@@ -80,14 +99,31 @@ var GeminiSyncSettingTab = class extends import_obsidian.PluginSettingTab {
           return;
         }
         button.setButtonText("Verifying...");
-        const isValid = await this.plugin.geminiService.verifyApiKey();
-        if (isValid) {
-          new import_obsidian.Notice("API key is valid!");
+        const result = await this.plugin.geminiService.verifyApiKeyDetailed();
+        if (result.ok) {
+          new import_obsidian.Notice(result.message);
           button.setButtonText("Verified \u2713");
         } else {
-          new import_obsidian.Notice("Invalid API key. Please check and try again.");
+          console.error("[Master of Knowledge] API verify failed:", result);
+          new import_obsidian.Notice(result.message.slice(0, 280), 12e3);
           button.setButtonText("Verify");
         }
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Reset File Search store binding").setDesc("Clears the saved store id and local sync URIs. Use after changing Google projects/keys or if importFile returns 401.").addButton(
+      (button) => button.setButtonText("Reset store").setWarning().onClick(async () => {
+        this.plugin.settings.corpusName = "";
+        for (const path of Object.keys(this.plugin.settings.files)) {
+          const entry = this.plugin.settings.files[path];
+          this.plugin.settings.files[path] = {
+            ...entry,
+            uri: "",
+            status: "pending"
+          };
+        }
+        await this.plugin.saveSettings();
+        this.display();
+        new import_obsidian.Notice("Store binding reset. Run Sync Now to recreate under the current API key.");
       })
     );
     const fileSearchDiagnosticEl = containerEl.createDiv({ cls: "mok-file-search-diagnostic" });
@@ -1426,14 +1462,49 @@ var GoogleGenerativeAI = class {
 var import_obsidian2 = require("obsidian");
 var API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 var UPLOAD_BASE_URL = "https://generativelanguage.googleapis.com/upload/v1beta";
+var DEFAULT_EMBEDDING_MODEL = "models/gemini-embedding-001";
 var GeminiService = class {
   constructor(plugin) {
     this.genAI = null;
     this.model = null;
     this.modelName = null;
     this.chatHistory = [];
+    /** Last structured API error for UI / notices (never contains raw full secrets if redacted). */
+    this.lastError = null;
     this.plugin = plugin;
     this.initializeClient();
+  }
+  redact(urlOrText) {
+    const key = this.plugin.settings.apiKey;
+    if (!key)
+      return urlOrText;
+    let out = urlOrText.split(key).join("API_KEY");
+    out = out.replace(/AIza[0-9A-Za-z_-]{10,}/g, "AIza\u2026REDACTED");
+    out = out.replace(/\bAQ[0-9A-Za-z_-]{10,}\b/g, "AQ\u2026REDACTED");
+    return out;
+  }
+  extractGoogleError(data) {
+    if (!data)
+      return "";
+    if (typeof data === "string")
+      return this.redact(data).slice(0, 500);
+    const err = data.error || data;
+    const message = err.message || err.status || JSON.stringify(err);
+    return this.redact(String(message)).slice(0, 500);
+  }
+  operationToDocumentInfo(operation, displayName, fallbackName) {
+    var _a;
+    const document2 = ((_a = operation == null ? void 0 : operation.response) == null ? void 0 : _a.document) || (operation == null ? void 0 : operation.response) || (operation == null ? void 0 : operation.document) || operation;
+    const name = (document2 == null ? void 0 : document2.name) || fallbackName;
+    if (!name || String(name).includes("/operations/")) {
+      return null;
+    }
+    return {
+      name: String(name),
+      displayName: (document2 == null ? void 0 : document2.displayName) || displayName || "",
+      createTime: (document2 == null ? void 0 : document2.createTime) || new Date().toISOString(),
+      updateTime: (document2 == null ? void 0 : document2.updateTime) || new Date().toISOString()
+    };
   }
   initializeClient() {
     if (this.plugin.settings.apiKey) {
@@ -1462,8 +1533,9 @@ var GeminiService = class {
   }
   // Helper method to make API requests using Obsidian's requestUrl (bypasses CORS)
   async apiRequest(url, method = "GET", body) {
+    var _a;
     try {
-      console.log(`[Gemini API] Request: ${method} ${url}`);
+      console.log(`[Gemini API] Request: ${method} ${this.redact(url)}`);
       const params = {
         url,
         method,
@@ -1476,36 +1548,105 @@ var GeminiService = class {
       return {
         ok: response.status >= 200 && response.status < 300,
         status: response.status,
-        data: response.json
+        data: response.json,
+        headers: response.headers
       };
     } catch (error) {
-      console.error("API request error:", error);
-      if (error.response) {
+      console.error("API request error:", this.redact(String((error == null ? void 0 : error.message) || error)));
+      const status = error.status || ((_a = error.response) == null ? void 0 : _a.status) || 500;
+      let data = { error: { message: error.message } };
+      try {
+        if (error.json)
+          data = error.json;
+        else if (error.response)
+          data = error.response;
+        else if (typeof error.text === "string") {
+          try {
+            data = JSON.parse(error.text);
+          } catch (e) {
+          }
+        }
+      } catch (e) {
+      }
+      return {
+        ok: false,
+        status,
+        data
+      };
+    }
+  }
+  /**
+   * Legacy boolean verify. Prefer verifyApiKeyDetailed() — models alone are not enough for sync.
+   */
+  async verifyApiKey() {
+    const result = await this.verifyApiKeyDetailed();
+    return result.ok;
+  }
+  /**
+   * Multi-step verification:
+   * 1) GET /models — basic key validity
+   * 2) GET /fileSearchStores — File Search authorization (common user failure point)
+   */
+  async verifyApiKeyDetailed() {
+    var _a, _b;
+    this.lastError = null;
+    if (!this.plugin.settings.apiKey) {
+      return {
+        ok: false,
+        status: "missing",
+        message: "API key is empty. Paste a key from Google AI Studio."
+      };
+    }
+    const key = this.plugin.settings.apiKey.trim();
+    if (key.length < 20) {
+      return {
+        ok: false,
+        status: "invalid",
+        message: "API key looks too short. Copy the full key from Google AI Studio."
+      };
+    }
+    const models = await this.apiRequest(`${API_BASE_URL}/models?key=${key}`);
+    if (!models.ok) {
+      const detail = this.extractGoogleError(models.data);
+      this.lastError = detail;
+      const status = models.status === 401 || models.status === 403 ? "invalid" : "network_error";
+      return {
+        ok: false,
+        status,
+        httpStatus: models.status,
+        detail,
+        message: models.status === 401 || models.status === 403 ? `API key rejected by Gemini (HTTP ${models.status}). Create a new key at aistudio.google.com/apikey with Application restrictions = None.` : `Could not reach Gemini models API (HTTP ${models.status}). Check network and try again.`
+      };
+    }
+    const stores = await this.apiRequest(`${API_BASE_URL}/fileSearchStores?key=${key}`);
+    if (!stores.ok) {
+      const detail = this.extractGoogleError(stores.data);
+      this.lastError = detail;
+      const code = (((_b = (_a = stores.data) == null ? void 0 : _a.error) == null ? void 0 : _b.status) || "").toString().toUpperCase();
+      const isAuth = stores.status === 401 || stores.status === 403 || code === "UNAUTHENTICATED" || code === "PERMISSION_DENIED";
+      if (isAuth) {
+        const restrictedHint = /referer|referrer|ip|restriction|application/i.test(detail) ? "restricted" : "file_search_denied";
         return {
           ok: false,
-          status: error.status || 500,
-          data: error.response
+          status: restrictedHint,
+          httpStatus: stores.status,
+          detail,
+          message: `API key can list models, but File Search is denied (HTTP ${stores.status} ${code || ""}). Remove Application restrictions, ensure Generative Language API is enabled, and use an unrestricted AI Studio key. Detail: ${detail || "UNAUTHENTICATED"}`
         };
       }
       return {
         ok: false,
-        status: 500,
-        data: { error: error.message }
+        status: "network_error",
+        httpStatus: stores.status,
+        detail,
+        message: `File Search probe failed (HTTP ${stores.status}). ${detail}`
       };
     }
-  }
-  async verifyApiKey() {
-    try {
-      if (!this.plugin.settings.apiKey)
-        return false;
-      const response = await this.apiRequest(
-        `${API_BASE_URL}/models?key=${this.plugin.settings.apiKey}`
-      );
-      return response.ok;
-    } catch (error) {
-      console.error("API key verification failed:", error);
-      return false;
-    }
+    return {
+      ok: true,
+      status: "valid",
+      message: "API key is valid for models and File Search Store access."
+    };
   }
   async diagnoseFileSearchUpload() {
     var _a, _b;
@@ -1679,7 +1820,8 @@ var GeminiService = class {
     if (!data)
       return "";
     const text = typeof data === "string" ? data : JSON.stringify(data);
-    return text.length > 900 ? `${text.slice(0, 900)}...` : text;
+    const redacted = this.redact(text);
+    return redacted.length > 900 ? `${redacted.slice(0, 900)}...` : redacted;
   }
   getApiKeyFamily() {
     const key = this.plugin.settings.apiKey.trim();
@@ -1691,9 +1833,9 @@ var GeminiService = class {
   }
   getFileSearchRecommendation(keyFamily) {
     if (keyFamily === "AQ") {
-      return "This looks like a new AQ Auth key. If model verification works but File Search upload/import returns 403, try an older AIza key if available or create a fresh Google Cloud project/key while Google resolves AQ File Search compatibility.";
+      return "This looks like a new AQ Auth key. If model verification works but File Search upload/import returns 401/403, try an unrestricted AIza key from AI Studio, or create a fresh Google Cloud project/key while Google resolves AQ File Search compatibility. Also clear Application restrictions and use Reset store after changing keys.";
     }
-    return "Check that this key is allowed to use Gemini File Search and Files API endpoints. If API restrictions are enabled, allow the Gemini API and try a fresh key/project.";
+    return "Use an unrestricted Google AI Studio key (Application restrictions = None). Ensure Generative Language API is enabled. If you changed keys/projects, click Reset store then Sync Now. Models-only Verify is not enough \u2014 use multi-step Verify or Diagnose File Search.";
   }
   // ==================== Corpus Management (FileSearchStores) ====================
   async createCorpus(displayName) {
@@ -1701,11 +1843,24 @@ var GeminiService = class {
       const response = await this.apiRequest(
         `${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`,
         "POST",
-        { displayName }
+        {
+          displayName,
+          embeddingModel: DEFAULT_EMBEDDING_MODEL
+        }
       );
       if (!response.ok) {
-        console.error("Failed to create fileSearchStore:", response.data);
-        return null;
+        const fallback = await this.apiRequest(
+          `${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`,
+          "POST",
+          { displayName }
+        );
+        if (!fallback.ok) {
+          const detail = this.extractGoogleError(fallback.data);
+          this.lastError = detail;
+          console.error("Failed to create fileSearchStore:", detail);
+          return null;
+        }
+        return fallback.data;
       }
       return response.data;
     } catch (error) {
@@ -1719,7 +1874,9 @@ var GeminiService = class {
         `${API_BASE_URL}/fileSearchStores?key=${this.plugin.settings.apiKey}`
       );
       if (!response.ok) {
-        console.error("Failed to list fileSearchStores");
+        const detail = this.extractGoogleError(response.data);
+        this.lastError = detail;
+        console.error("Failed to list fileSearchStores:", detail);
         return [];
       }
       return response.data.fileSearchStores || [];
@@ -1743,12 +1900,16 @@ var GeminiService = class {
         if (response.ok) {
           console.log("Corpus verified.");
           return this.plugin.settings.corpusName;
-        } else if (response.status === 404) {
-          console.warn("Corpus not found (404), clearing setting to recreate.");
+        } else if (response.status === 404 || response.status === 401 || response.status === 403) {
+          console.warn(
+            `Corpus not accessible (${response.status}), clearing setting to recreate.`
+          );
           this.plugin.settings.corpusName = "";
           await this.plugin.saveSettings();
         } else {
-          console.error("Error verifying corpus:", response.data);
+          const detail = this.extractGoogleError(response.data);
+          this.lastError = detail;
+          console.error("Error verifying corpus:", detail);
         }
       } catch (error) {
         console.error("Error checking corpus existence:", error);
@@ -1775,13 +1936,19 @@ var GeminiService = class {
   }
   // ==================== Document Management ====================
   /**
-   * Upload document using two-step workflow:
-   * 1. Upload to Files API with uploadType=multipart
-   * 2. Import to FileSearchStore using importFile
+   * Upload document:
+   * Preferred: direct uploadToFileSearchStore (modern File Search API)
+   * Fallback: Files API multipart + importFile (legacy two-step)
    */
   async uploadDocument(corpusName, filePath, content) {
     try {
       console.log(`[Gemini API] Uploading document: ${filePath} to ${corpusName}`);
+      this.lastError = null;
+      const direct = await this.uploadToFileSearchStore(corpusName, filePath, content);
+      if (direct) {
+        return direct;
+      }
+      console.warn("[Gemini API] Direct upload failed; falling back to Files API + importFile");
       const fileResult = await this.uploadToFilesApi(filePath, content);
       if (!fileResult) {
         console.error("[Gemini API] Failed to upload to Files API");
@@ -1792,9 +1959,97 @@ var GeminiService = class {
       return documentInfo;
     } catch (error) {
       console.error("Upload document error:", error);
+      this.lastError = this.redact((error == null ? void 0 : error.message) || String(error));
       if (error.response) {
         console.error("Error response:", error.response);
       }
+      return null;
+    }
+  }
+  /**
+   * Modern path: resumable upload directly into FileSearchStore.
+   * See: https://ai.google.dev/gemini-api/docs/file-search
+   */
+  async uploadToFileSearchStore(corpusName, displayName, content) {
+    var _a;
+    try {
+      console.log(`[Gemini API] Direct uploadToFileSearchStore for ${displayName}`);
+      const contentBytes = new TextEncoder().encode(content);
+      const numBytes = contentBytes.byteLength;
+      const startUrl = `${UPLOAD_BASE_URL}/${corpusName}:uploadToFileSearchStore?key=${this.plugin.settings.apiKey}`;
+      let startResponse;
+      try {
+        startResponse = await (0, import_obsidian2.requestUrl)({
+          url: startUrl,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Upload-Protocol": "resumable",
+            "X-Goog-Upload-Command": "start",
+            "X-Goog-Upload-Header-Content-Length": String(numBytes),
+            "X-Goog-Upload-Header-Content-Type": "text/markdown"
+          },
+          body: JSON.stringify({ displayName })
+        });
+      } catch (error) {
+        const status = error.status || 500;
+        const detail = this.extractGoogleError(error.json || error);
+        this.lastError = `uploadToFileSearchStore start HTTP ${status}: ${detail}`;
+        console.error("[Gemini API]", this.lastError);
+        return null;
+      }
+      if (startResponse.status < 200 || startResponse.status >= 300) {
+        const detail = this.extractGoogleError(startResponse.json);
+        this.lastError = `uploadToFileSearchStore start HTTP ${startResponse.status}: ${detail}`;
+        console.error("[Gemini API]", this.lastError);
+        return null;
+      }
+      const headers = startResponse.headers || {};
+      const uploadUrl = headers["x-goog-upload-url"] || headers["X-Goog-Upload-URL"] || headers["X-Goog-Upload-Url"] || ((_a = Object.entries(headers).find(([k]) => k.toLowerCase() === "x-goog-upload-url")) == null ? void 0 : _a[1]);
+      if (!uploadUrl) {
+        console.warn("[Gemini API] No x-goog-upload-url header; cannot complete direct upload");
+        this.lastError = "uploadToFileSearchStore: missing x-goog-upload-url header";
+        return null;
+      }
+      let finalizeResponse;
+      try {
+        finalizeResponse = await (0, import_obsidian2.requestUrl)({
+          url: uploadUrl,
+          method: "POST",
+          headers: {
+            "Content-Length": String(numBytes),
+            "X-Goog-Upload-Offset": "0",
+            "X-Goog-Upload-Command": "upload, finalize",
+            "Content-Type": "text/markdown"
+          },
+          body: content
+        });
+      } catch (error) {
+        const status = error.status || 500;
+        const detail = this.extractGoogleError(error.json || error);
+        this.lastError = `uploadToFileSearchStore finalize HTTP ${status}: ${detail}`;
+        console.error("[Gemini API]", this.lastError);
+        return null;
+      }
+      console.log(`[Gemini API] Direct upload status: ${finalizeResponse.status}`);
+      if (finalizeResponse.status < 200 || finalizeResponse.status >= 300) {
+        const detail = this.extractGoogleError(finalizeResponse.json);
+        this.lastError = `uploadToFileSearchStore finalize HTTP ${finalizeResponse.status}: ${detail}`;
+        console.error("[Gemini API]", this.lastError);
+        return null;
+      }
+      const operation = finalizeResponse.json;
+      if (operation && operation.done === false && operation.name) {
+        const result = await this.waitForOperation(operation.name);
+        if (result) {
+          return { ...result, displayName };
+        }
+        return null;
+      }
+      return this.operationToDocumentInfo(operation, displayName);
+    } catch (error) {
+      this.lastError = this.redact((error == null ? void 0 : error.message) || String(error));
+      console.error("[Gemini API] uploadToFileSearchStore error:", this.lastError);
       return null;
     }
   }
@@ -1830,30 +2085,42 @@ var GeminiService = class {
       body += content + "\r\n";
       body += `--${boundary}--`;
       const url = `${UPLOAD_BASE_URL}/files?uploadType=multipart&key=${this.plugin.settings.apiKey}`;
-      console.log(`[Gemini API] Files API URL: ${url.replace(this.plugin.settings.apiKey, "API_KEY")}`);
+      console.log(`[Gemini API] Files API URL: ${this.redact(url)}`);
       console.log(`[Gemini API] Content length: ${content.length} bytes`);
-      const response = await (0, import_obsidian2.requestUrl)({
-        url,
-        method: "POST",
-        headers: {
-          "Content-Type": `multipart/form-data; boundary=${boundary}`
-        },
-        body
-      });
+      let response;
+      try {
+        response = await (0, import_obsidian2.requestUrl)({
+          url,
+          method: "POST",
+          headers: {
+            "Content-Type": `multipart/form-data; boundary=${boundary}`
+          },
+          body
+        });
+      } catch (error) {
+        const status = error.status || 500;
+        const detail = this.extractGoogleError(error.json || error);
+        this.lastError = `Files API error HTTP ${status}: ${detail || error.message}`;
+        console.error("[Gemini API]", this.lastError);
+        return null;
+      }
       console.log(`[Gemini API] Files API response status: ${response.status}`);
       if (response.status < 200 || response.status >= 300) {
-        console.error("[Gemini API] Files API error:", response.json || response.text);
+        const detail = this.extractGoogleError(response.json);
+        this.lastError = `Files API HTTP ${response.status}: ${detail}`;
+        console.error("[Gemini API] Files API error:", detail);
         return null;
       }
       const result = response.json;
-      console.log(`[Gemini API] Files API response:`, JSON.stringify(result));
       if (result.file && result.file.name) {
         return { name: result.file.name };
       }
       console.error("[Gemini API] Unexpected Files API response format");
+      this.lastError = "Unexpected Files API response format";
       return null;
     } catch (error) {
-      console.error("[Gemini API] Files API upload error:", error);
+      this.lastError = this.redact((error == null ? void 0 : error.message) || String(error));
+      console.error("[Gemini API] Files API upload error:", this.lastError);
       return null;
     }
   }
@@ -1861,26 +2128,40 @@ var GeminiService = class {
    * Import a file from Files API to FileSearchStore
    */
   async importFileToStore(corpusName, fileName, displayName) {
+    var _a, _b, _c, _d, _e;
     try {
       console.log(`[Gemini API] Step 2: Importing ${fileName} to ${corpusName}...`);
       const url = `${API_BASE_URL}/${corpusName}:importFile?key=${this.plugin.settings.apiKey}`;
-      const response = await (0, import_obsidian2.requestUrl)({
-        url,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          fileName
-        })
-      });
+      let response;
+      try {
+        response = await (0, import_obsidian2.requestUrl)({
+          url,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            fileName
+          })
+        });
+      } catch (error) {
+        const status = error.status || 500;
+        const detail = this.extractGoogleError(error.json || error);
+        const code = (((_b = (_a = error.json) == null ? void 0 : _a.error) == null ? void 0 : _b.status) || "").toString();
+        this.lastError = `importFile HTTP ${status} ${code}: ${detail}. Models/upload may work while importFile returns UNAUTHENTICATED if the key is restricted or the File Search store belongs to another project. Reset store after changing keys.`;
+        console.error("[Gemini API]", this.lastError);
+        return null;
+      }
       console.log(`[Gemini API] Import response status: ${response.status}`);
       if (response.status < 200 || response.status >= 300) {
-        console.error("[Gemini API] Import error:", response.json || response.text);
+        const detail = this.extractGoogleError(response.json);
+        const code = (((_d = (_c = response.json) == null ? void 0 : _c.error) == null ? void 0 : _d.status) || "").toString();
+        this.lastError = `importFile HTTP ${response.status} ${code}: ${detail}. If status is 401 UNAUTHENTICATED: use an unrestricted Google AI Studio key and clear Application restrictions; after key change, Reset store then Sync Now.`;
+        console.error("[Gemini API] Import error:", this.lastError);
         return null;
       }
       const operation = response.json;
-      console.log(`[Gemini API] Import operation:`, JSON.stringify(operation));
+      console.log(`[Gemini API] Import operation:`, (_e = JSON.stringify(operation)) == null ? void 0 : _e.slice(0, 500));
       if (operation.done === false && operation.name) {
         const result = await this.waitForOperation(operation.name);
         if (result) {
@@ -1891,14 +2172,14 @@ var GeminiService = class {
         }
         return null;
       }
-      return {
-        name: operation.name || fileName.replace("files/", `${corpusName}/documents/`),
+      return this.operationToDocumentInfo(
+        operation,
         displayName,
-        createTime: new Date().toISOString(),
-        updateTime: new Date().toISOString()
-      };
+        fileName.replace("files/", `${corpusName}/documents/`)
+      );
     } catch (error) {
-      console.error("[Gemini API] Import file error:", error);
+      this.lastError = this.redact((error == null ? void 0 : error.message) || String(error));
+      console.error("[Gemini API] Import file error:", this.lastError);
       return null;
     }
   }
@@ -1915,28 +2196,28 @@ var GeminiService = class {
           `${API_BASE_URL}/${operationName}?key=${this.plugin.settings.apiKey}`
         );
         if (!response.ok) {
-          console.error("Failed to get operation status:", response.data);
+          console.error("Failed to get operation status:", this.extractGoogleError(response.data));
           continue;
         }
         const operation = response.data;
         console.log(`[Gemini API] Operation status (attempt ${i + 1}):`, operation.done);
         if (operation.done) {
           if (operation.error) {
+            const detail = this.extractGoogleError(operation);
+            this.lastError = `Operation failed: ${detail}`;
             console.error("Operation failed:", operation.error);
             return null;
           }
-          const docResponse = operation.response;
-          return {
-            name: (docResponse == null ? void 0 : docResponse.name) || operationName.replace("/operations/", "/documents/"),
-            displayName: (docResponse == null ? void 0 : docResponse.displayName) || "",
-            createTime: (docResponse == null ? void 0 : docResponse.createTime) || new Date().toISOString(),
-            updateTime: (docResponse == null ? void 0 : docResponse.updateTime) || new Date().toISOString()
-          };
+          return this.operationToDocumentInfo(operation, "");
         }
       } catch (error) {
-        console.error(`Error checking operation status (attempt ${i + 1}):`, error);
+        console.error(
+          `Error checking operation status (attempt ${i + 1}):`,
+          this.redact(String(error))
+        );
       }
     }
+    this.lastError = "Operation timed out waiting for File Search indexing";
     console.error("Operation timed out");
     return null;
   }
@@ -2706,10 +2987,15 @@ var SyncEngine = class {
       return;
     this.isSyncing = true;
     this.plugin.updateStatusBar(`Syncing (${this.syncQueue.size})...`);
+    const syncApiKey = this.plugin.settings.apiKey;
     const corpusName = await this.geminiService.getOrCreateCorpus();
     if (!corpusName) {
-      console.error("[SyncEngine] Failed to get/create corpus");
-      new import_obsidian3.Notice("Failed to connect to Gemini. Check your API key.");
+      const detail = this.geminiService.lastError;
+      console.error("[SyncEngine] Failed to get/create corpus", detail);
+      new import_obsidian3.Notice(
+        detail ? `File Search store failed: ${detail.slice(0, 200)}` : "Failed to create/access File Search store. Verify API key (models + File Search) and remove key restrictions.",
+        1e4
+      );
       this.isSyncing = false;
       this.plugin.updateStatusBar("Error");
       return;
@@ -2718,13 +3004,33 @@ var SyncEngine = class {
     this.syncQueue.clear();
     let successCount = 0;
     let errorCount = 0;
-    for (const [path, file] of entries) {
+    let stoppedForKeyChange = false;
+    for (let index = 0; index < entries.length; index++) {
+      const [path, file] = entries[index];
       try {
+        if (this.plugin.settings.apiKey !== syncApiKey) {
+          this.syncQueue.set(path, file);
+          for (const [, remainingFile] of entries.slice(index + 1)) {
+            this.syncQueue.set(remainingFile.path, remainingFile);
+          }
+          new import_obsidian3.Notice("API key changed during sync. Sync stopped; run Sync Now with the new key.");
+          this.plugin.updateStatusBar("Stopped");
+          stoppedForKeyChange = true;
+          break;
+        }
         if (!this.plugin.shouldSync(file)) {
           console.log(`[SyncEngine] Skipping ${path} - no longer in selected sync folders`);
           continue;
         }
-        const success = await this.syncFile(file, corpusName);
+        const success = await this.syncFile(file, corpusName, syncApiKey);
+        if (this.plugin.settings.apiKey !== syncApiKey) {
+          for (const [, remainingFile] of entries.slice(index + 1)) {
+            this.syncQueue.set(remainingFile.path, remainingFile);
+          }
+          new import_obsidian3.Notice("API key changed during sync. Sync stopped; run Sync Now with the new key.");
+          stoppedForKeyChange = true;
+          break;
+        }
         if (success) {
           successCount++;
         } else {
@@ -2737,8 +3043,16 @@ var SyncEngine = class {
       await this.delay(200);
     }
     this.isSyncing = false;
+    if (stoppedForKeyChange) {
+      this.plugin.updateChatViewSyncStatus();
+      return;
+    }
     if (errorCount > 0) {
       this.plugin.updateStatusBar(`Done (${errorCount} errors)`);
+      const detail = this.geminiService.lastError;
+      if (detail) {
+        new import_obsidian3.Notice(`Sync finished with ${errorCount} error(s): ${detail.slice(0, 220)}`, 12e3);
+      }
       setTimeout(() => this.plugin.updateStatusBar("Ready"), 3e3);
     } else {
       this.plugin.updateStatusBar("Ready");
@@ -2747,7 +3061,7 @@ var SyncEngine = class {
     console.log(`[SyncEngine] Queue processed: ${successCount} success, ${errorCount} errors`);
   }
   // ==================== File Sync Logic ====================
-  async syncFile(file, corpusName) {
+  async syncFile(file, corpusName, syncApiKey) {
     try {
       const content = await this.plugin.app.vault.read(file);
       const newHash = await this.calculateHash(content);
@@ -2757,9 +3071,15 @@ var SyncEngine = class {
         return true;
       }
       if (existingData && existingData.uri) {
+        if (this.plugin.settings.apiKey !== syncApiKey) {
+          return false;
+        }
         console.log(`[SyncEngine] Updating ${file.path}`);
         const success = await this.geminiService.updateDocument(existingData.uri, content);
         if (success) {
+          if (this.plugin.settings.apiKey !== syncApiKey) {
+            return false;
+          }
           this.plugin.settings.files[file.path] = {
             ...existingData,
             hash: newHash,
@@ -2769,6 +3089,9 @@ var SyncEngine = class {
           await this.plugin.saveSettings();
           return true;
         } else {
+          if (this.plugin.settings.apiKey !== syncApiKey) {
+            return false;
+          }
           this.plugin.settings.files[file.path] = {
             ...existingData,
             status: "error"
@@ -2777,9 +3100,15 @@ var SyncEngine = class {
           return false;
         }
       } else {
+        if (this.plugin.settings.apiKey !== syncApiKey) {
+          return false;
+        }
         console.log(`[SyncEngine] Uploading ${file.path}`);
         const document2 = await this.geminiService.uploadDocument(corpusName, file.path, content);
         if (document2) {
+          if (this.plugin.settings.apiKey !== syncApiKey) {
+            return false;
+          }
           this.plugin.settings.files[file.path] = {
             uri: document2.name,
             hash: newHash,
@@ -2789,6 +3118,9 @@ var SyncEngine = class {
           await this.plugin.saveSettings();
           return true;
         } else {
+          if (this.plugin.settings.apiKey !== syncApiKey) {
+            return false;
+          }
           this.plugin.settings.files[file.path] = {
             uri: "",
             hash: "",
@@ -2796,6 +3128,9 @@ var SyncEngine = class {
             status: "error"
           };
           await this.plugin.saveSettings();
+          if (this.geminiService.lastError) {
+            console.error(`[SyncEngine] Upload failed for ${file.path}:`, this.geminiService.lastError);
+          }
           return false;
         }
       }

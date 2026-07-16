@@ -99,12 +99,19 @@ export class SyncEngine {
 
 		this.isSyncing = true;
 		this.plugin.updateStatusBar(`Syncing (${this.syncQueue.size})...`);
+		const syncApiKey = this.plugin.settings.apiKey;
 
 		// Get corpus (create if needed)
 		const corpusName = await this.geminiService.getOrCreateCorpus();
 		if (!corpusName) {
-			console.error('[SyncEngine] Failed to get/create corpus');
-			new Notice('Failed to connect to Gemini. Check your API key.');
+			const detail = this.geminiService.lastError;
+			console.error('[SyncEngine] Failed to get/create corpus', detail);
+			new Notice(
+				detail
+					? `File Search store failed: ${detail.slice(0, 200)}`
+					: 'Failed to create/access File Search store. Verify API key (models + File Search) and remove key restrictions.',
+				10000
+			);
 			this.isSyncing = false;
 			this.plugin.updateStatusBar('Error');
 			return;
@@ -116,14 +123,34 @@ export class SyncEngine {
 
 		let successCount = 0;
 		let errorCount = 0;
+		let stoppedForKeyChange = false;
 
-		for (const [path, file] of entries) {
+		for (let index = 0; index < entries.length; index++) {
+			const [path, file] = entries[index];
 			try {
+				if (this.plugin.settings.apiKey !== syncApiKey) {
+					this.syncQueue.set(path, file);
+					for (const [, remainingFile] of entries.slice(index + 1)) {
+						this.syncQueue.set(remainingFile.path, remainingFile);
+					}
+					new Notice('API key changed during sync. Sync stopped; run Sync Now with the new key.');
+					this.plugin.updateStatusBar('Stopped');
+					stoppedForKeyChange = true;
+					break;
+				}
 				if (!this.plugin.shouldSync(file)) {
 					console.log(`[SyncEngine] Skipping ${path} - no longer in selected sync folders`);
 					continue;
 				}
-				const success = await this.syncFile(file, corpusName);
+				const success = await this.syncFile(file, corpusName, syncApiKey);
+				if (this.plugin.settings.apiKey !== syncApiKey) {
+					for (const [, remainingFile] of entries.slice(index + 1)) {
+						this.syncQueue.set(remainingFile.path, remainingFile);
+					}
+					new Notice('API key changed during sync. Sync stopped; run Sync Now with the new key.');
+					stoppedForKeyChange = true;
+					break;
+				}
 				if (success) {
 					successCount++;
 				} else {
@@ -140,8 +167,17 @@ export class SyncEngine {
 
 		this.isSyncing = false;
 
+		if (stoppedForKeyChange) {
+			this.plugin.updateChatViewSyncStatus();
+			return;
+		}
+
 		if (errorCount > 0) {
 			this.plugin.updateStatusBar(`Done (${errorCount} errors)`);
+			const detail = this.geminiService.lastError;
+			if (detail) {
+				new Notice(`Sync finished with ${errorCount} error(s): ${detail.slice(0, 220)}`, 12000);
+			}
 			setTimeout(() => this.plugin.updateStatusBar('Ready'), 3000);
 		} else {
 			this.plugin.updateStatusBar('Ready');
@@ -155,7 +191,7 @@ export class SyncEngine {
 
 	// ==================== File Sync Logic ====================
 
-	private async syncFile(file: TFile, corpusName: string): Promise<boolean> {
+	private async syncFile(file: TFile, corpusName: string, syncApiKey: string): Promise<boolean> {
 		try {
 			// Read file content
 			const content = await this.plugin.app.vault.read(file);
@@ -172,11 +208,17 @@ export class SyncEngine {
 
 			// Update or create document
 			if (existingData && existingData.uri) {
+				if (this.plugin.settings.apiKey !== syncApiKey) {
+					return false;
+				}
 				// Update existing document
 				console.log(`[SyncEngine] Updating ${file.path}`);
 				const success = await this.geminiService.updateDocument(existingData.uri, content);
 
 				if (success) {
+					if (this.plugin.settings.apiKey !== syncApiKey) {
+						return false;
+					}
 					this.plugin.settings.files[file.path] = {
 						...existingData,
 						hash: newHash,
@@ -186,6 +228,9 @@ export class SyncEngine {
 					await this.plugin.saveSettings();
 					return true;
 				} else {
+					if (this.plugin.settings.apiKey !== syncApiKey) {
+						return false;
+					}
 					// Mark as error
 					this.plugin.settings.files[file.path] = {
 						...existingData,
@@ -195,11 +240,17 @@ export class SyncEngine {
 					return false;
 				}
 			} else {
+				if (this.plugin.settings.apiKey !== syncApiKey) {
+					return false;
+				}
 				// Create new document
 				console.log(`[SyncEngine] Uploading ${file.path}`);
 				const document = await this.geminiService.uploadDocument(corpusName, file.path, content);
 
 				if (document) {
+					if (this.plugin.settings.apiKey !== syncApiKey) {
+						return false;
+					}
 					this.plugin.settings.files[file.path] = {
 						uri: document.name,
 						hash: newHash,
@@ -209,6 +260,9 @@ export class SyncEngine {
 					await this.plugin.saveSettings();
 					return true;
 				} else {
+					if (this.plugin.settings.apiKey !== syncApiKey) {
+						return false;
+					}
 					this.plugin.settings.files[file.path] = {
 						uri: '',
 						hash: '',
@@ -216,6 +270,9 @@ export class SyncEngine {
 						status: 'error'
 					};
 					await this.plugin.saveSettings();
+					if (this.geminiService.lastError) {
+						console.error(`[SyncEngine] Upload failed for ${file.path}:`, this.geminiService.lastError);
+					}
 					return false;
 				}
 			}

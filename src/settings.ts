@@ -80,14 +80,33 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Gemini API Key')
-			.setDesc('Enter your Google Gemini API key. Get one from Google AI Studio.')
+			.setDesc('Google AI Studio key (often AIza…). Leave Application restrictions = None. Verify checks models AND File Search.')
 			.addText(text => text
 				.setPlaceholder('Enter your API key')
 				.setValue(this.plugin.settings.apiKey ? '••••••••••••••••' : '')
 				.onChange(async (value) => {
 					if (value && !value.includes('•')) {
-						this.plugin.settings.apiKey = value;
-						await this.plugin.saveSettings();
+						const previous = this.plugin.settings.apiKey;
+						const next = value.trim();
+						if (next && next !== previous) {
+							this.plugin.settings.apiKey = next;
+							this.plugin.settings.corpusName = '';
+							for (const path of Object.keys(this.plugin.settings.files)) {
+								const entry = this.plugin.settings.files[path];
+								this.plugin.settings.files[path] = {
+									...entry,
+									uri: '',
+									status: 'pending'
+								};
+							}
+							await this.plugin.saveSettings();
+							this.plugin.geminiService.refreshClient();
+							new Notice('API key updated. File Search store binding cleared — run Verify, then Sync Now.');
+						} else {
+							this.plugin.settings.apiKey = next;
+							await this.plugin.saveSettings();
+							this.plugin.geminiService.refreshClient();
+						}
 					}
 				})
 				.inputEl.type = 'password'
@@ -100,14 +119,37 @@ export class GeminiSyncSettingTab extends PluginSettingTab {
 						return;
 					}
 					button.setButtonText('Verifying...');
-					const isValid = await this.plugin.geminiService.verifyApiKey();
-					if (isValid) {
-						new Notice('API key is valid!');
+					const result = await this.plugin.geminiService.verifyApiKeyDetailed();
+					if (result.ok) {
+						new Notice(result.message);
 						button.setButtonText('Verified ✓');
 					} else {
-						new Notice('Invalid API key. Please check and try again.');
+						console.error('[Master of Knowledge] API verify failed:', result);
+						new Notice(result.message.slice(0, 280), 12000);
 						button.setButtonText('Verify');
 					}
+				})
+			);
+
+		new Setting(containerEl)
+			.setName('Reset File Search store binding')
+			.setDesc('Clears the saved store id and local sync URIs. Use after changing Google projects/keys or if importFile returns 401.')
+			.addButton(button => button
+				.setButtonText('Reset store')
+				.setWarning()
+				.onClick(async () => {
+					this.plugin.settings.corpusName = '';
+					for (const path of Object.keys(this.plugin.settings.files)) {
+						const entry = this.plugin.settings.files[path];
+						this.plugin.settings.files[path] = {
+							...entry,
+							uri: '',
+							status: 'pending'
+						};
+					}
+					await this.plugin.saveSettings();
+					this.display();
+					new Notice('Store binding reset. Run Sync Now to recreate under the current API key.');
 				})
 			);
 

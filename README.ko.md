@@ -109,14 +109,21 @@ Agent:
 
 ## 문제 해결
 
-### API key is invalid
-- Google AI Studio에서 키가 유효한지 확인하세요.
-- Google Cloud 프로젝트에서 Gemini API 사용이 가능한지 확인하세요.
+### API key is invalid / Verify 실패
+- [Google AI Studio](https://aistudio.google.com/app/apikey)에서 새 키를 발급하세요 (보통 `AIza`로 시작).
+- Google Cloud 프로젝트에서 Generative Language / Gemini API 사용이 가능한지 확인하세요.
+
+### Verify는 되는데 Sync만 실패 / importFile HTTP 401 (v2.0.37+)
+1. API 키 **Application restrictions = None** (Referrer/IP 제한 시 models는 되고 File Search만 막힐 수 있음).
+2. 키/프로젝트를 바꿨다면 **Reset store** 후 **Sync Now**.
+3. Verify는 이제 models + File Search Store를 함께 검사합니다.
+4. 업로드는 `uploadToFileSearchStore` 우선, 실패 시 Files API + `importFile` 폴백.
+5. 계속 실패하면 **Diagnose File Search**로 단계를 확인하세요.
 
 ### Sync Dashboard에 error 파일만 생김
 - sync 폴더가 올바르게 선택되었는지 확인합니다.
 - **Diagnose File Search**를 실행해 실패 단계를 확인합니다.
-- API key가 `AQ...`이고 403이 발생하면 File Search 호환 문제 가능성이 있습니다.
+- API key가 `AQ...`이고 401/403이 발생하면 File Search 호환/제한 문제 가능성이 있습니다.
 
 ### Chat이 내 노트를 제대로 쓰지 않는 것 같음
 - Sync Dashboard에서 synced 파일 수를 확인하세요.
